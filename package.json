@@ -1,0 +1,29 @@
+{
+  "name": "polopan-products-mcp",
+  "version": "1.0.3",
+  "description": "Production-ready local MCP server for PoloPan products search",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "polopan-products-mcp": "src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
+  }
+}
