@@ -1,90 +1,92 @@
-# PoloPan Products MCP Server
+# PoloPan Products MCP
 
-Local production-ready MCP server for PoloPan product search.
+PoloPan product search and outfits as a **Model Context Protocol** server — public, no PoloPan account required.
 
-This server wraps:
-- `GET /products` for text and image search
-- `GET /products/handle/{handle}` for details
-- `POST /looks` for recommended outfits
+Traffic flow:
 
-## Features
-
-- Text product search (`search_products_text`)
-- Image URL product search (`search_products_image`)
-- Image upload + search (`search_products_image_upload`)
-- Product details by handle (`get_product_by_handle`)
-- Alternatives in budget (`search_alternatives_in_budget`)
-- Recommended outfits (`get_recommended_outfits`)
-- Input validation with `zod`
-- Timeout and robust HTTP error messages
-- Local-only runtime over `stdio` (no cloud required)
-
-## Requirements
-
-- Node.js 18+
-- Network access to `https://apiv2.polopan.com`
-
-## Install
-
-```bash
-npm install
+```text
+MCP client (Cursor, Claude, …) → https://mcp-server.polopan.com/mcp → apiv2.polopan.com
 ```
 
-## Run
+Browsers cannot call `apiv2` catalog APIs directly (domain / CORS / secret). Only the hosted MCP service holds the upstream secret.
 
-```bash
-npm start
-```
+---
 
-## Configuration
+## Hosted MCP (recommended)
 
-All API config is now hardcoded in `src/index.js`.
+**Endpoint:** `https://mcp-server.polopan.com/mcp`
 
-## Cursor MCP Configuration
-
-Add this server in your MCP config:
+Add to `~/.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "polopan-products": {
-      "command": "node",
-      "args": ["/Users/shekharchatterjee/polopan/mcp/src/index.js"]
+      "type": "http",
+      "url": "https://mcp-server.polopan.com/mcp",
+      "headers": {}
     }
   }
 }
 ```
 
-## Tool Contracts
+Reload MCP in Cursor after saving.
 
-### `search_products_text`
-- Required: `query`
-- Optional: `page`, `page_size`, `sort_by`, `sort_order`, `gender`, `occasion`, `size[]`, `price_min`, `price_max`, `vendor[]`, `personalize`
+### Rate limits (per IP, no login)
 
-### `search_products_image`
-- Required: `image_url`
-- Optional: same filters as text search
+| Tier | Tools | Default |
+|------|--------|---------|
+| **Search** | `search_products_text`, `search_products_image` | 30 / min, 180 / hour |
+| **Catalog** | `get_product_by_handle`, `search_alternatives_in_budget`, `get_recommended_outfits` | 45 / min, 300 / hour |
+| **Upload** | `search_products_image_upload` | **2 / min, 10 / hour** |
+| **Transport** | All `/mcp` JSON-RPC | 90 / min burst cap |
 
-### `search_products_image_upload`
-- Required: one of `image_path` or `image_base64`
-- Optional:
-  - `content_type` (default inferred/`image/jpeg`)
-  - `expiry_hours` (default `24`)
-  - same search filters as `search_products_image`
+When limited, clients receive HTTP **429** with `Retry-After`.
 
-### `get_product_by_handle`
-- Required: `handle`
+---
 
-### `search_alternatives_in_budget`
-- Required: `handle`
-- Optional:
-  - `budget_range`: `0-1500` | `1501-3000` | `3001-5000` | `5000+` (default `1501-3000`)
-  - `page` (default `1`)
-  - `page_size` (default `8`)
-  - `limit` (default `6`, final number returned after filtering current product)
-  - `sort_by`, `sort_order`, `personalize`
+## npm package (local stdio)
 
-### `get_recommended_outfits`
-- Required: `handle`
-- Optional: `page` (default `1`), `page_size` (default `20`)
+Published as [`polopan-products-mcp`](https://www.npmjs.com/package/polopan-products-mcp).
 
+**For end users:** use the **hosted URL** above. The npm stdio binary is for local development only and does **not** ship API secrets.
+
+```bash
+npx -y polopan-products-mcp
+```
+
+Maintainers running stdio against apiv2 must set (never commit):
+
+```bash
+export POLOPAN_API_BASE_URL=https://apiv2.polopan.com
+export POLOPAN_MCP_SECRET_KEY='<same value as server POLOPAN_MCP_SECRET_KEY>'
+export POLOPAN_MCP_USER_AGENT=PoloPan-MCP-Public
+```
+
+---
+
+## Requirements
+
+- Node.js 18+
+- Network access to `https://mcp-server.polopan.com` (hosted) or apiv2 (stdio dev only)
+
+---
+
+## Tools
+
+- `search_products_text` — text search  
+- `search_products_image` — search by image URL  
+- `search_products_image_upload` — upload image then search (strict rate limit)  
+- `get_product_by_handle` — product by handle  
+- `search_alternatives_in_budget` — similar items in a budget band  
+- `get_recommended_outfits` — outfit recommendations  
+
+---
+
+## Server implementation
+
+Production HTTP MCP lives in the PoloPan API monorepo:
+
+`api/cloudrun/mcp_products_service/`
+
+Deploy notes: set `POLOPAN_MCP_SECRET_KEY` in Cloud Run / VM `.env` and Mongo `platform_settings` (`key: POLOPAN_MCP_SECRET_KEY`).

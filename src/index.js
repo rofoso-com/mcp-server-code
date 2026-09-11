@@ -4,12 +4,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  applyPurchaseLinksToMcpPayload,
+  buildPurchaseLinkResolverOptions,
+} from "./product_purchase_links.js";
 
 const config = {
-  baseUrl: "https://apiv2.polopan.com",
-  secretKey: "MCP",
-  userAgent: "PoloPan-MCP",
-  timeoutMs: 20000,
+  baseUrl: (process.env.POLOPAN_API_BASE_URL || "https://apiv2.polopan.com").replace(/\/$/, ""),
+  secretKey: (process.env.POLOPAN_MCP_SECRET_KEY || "MCP").trim(),
+  userAgent: (process.env.POLOPAN_MCP_USER_AGENT || "PoloPan-MCP").trim(),
+  timeoutMs: Number(process.env.POLOPAN_MCP_TIMEOUT_MS || 20_000),
 };
 
 function getHeaders(extra = {}) {
@@ -142,15 +146,21 @@ async function apiUploadImage({ fileBytes, contentType, expiryHours = 24 }) {
   return response.json();
 }
 
-function asToolResult(data) {
+const purchaseLinkOptions = buildPurchaseLinkResolverOptions({
+  config,
+  getHeaders,
+});
+
+async function asToolResultWithPurchaseLinks(data) {
+  const sanitized = await applyPurchaseLinksToMcpPayload(data, purchaseLinkOptions);
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify(data),
+        text: JSON.stringify(sanitized),
       },
     ],
-    structuredContent: data,
+    structuredContent: sanitized,
   };
 }
 
@@ -171,7 +181,8 @@ server.registerTool(
   "search_products_text",
   {
     title: "Search Products By Text",
-    description: "Search PoloPan products using a text query and optional filters.",
+    description:
+      "Search PoloPan products using a text query and optional filters. Each product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
     inputSchema: {
       query: z.string().min(1, "query is required"),
       page: z.number().int().min(1).max(1000).default(1),
@@ -187,7 +198,7 @@ server.registerTool(
   },
   async (args) => {
     const data = await apiGet("/products", args);
-    return asToolResult(data);
+    return asToolResultWithPurchaseLinks(data);
   }
 );
 
@@ -195,7 +206,8 @@ server.registerTool(
   "search_products_image",
   {
     title: "Search Products By Image URL",
-    description: "Search PoloPan products using image_url and optional filters.",
+    description:
+      "Search PoloPan products using image_url and optional filters. Each product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
     inputSchema: {
       image_url: z.string().url("image_url must be a valid URL"),
       page: z.number().int().min(1).max(1000).default(1),
@@ -212,7 +224,7 @@ server.registerTool(
   },
   async (args) => {
     const data = await apiGet("/products", args);
-    return asToolResult(data);
+    return asToolResultWithPurchaseLinks(data);
   }
 );
 
@@ -221,7 +233,7 @@ server.registerTool(
   {
     title: "Search Products By Uploaded Image",
     description:
-      "Upload a local image (or base64 bytes) and search PoloPan products using the uploaded image URL (same flow as mobile app).",
+      "Upload a local image (or base64 bytes) and search PoloPan products using the uploaded image URL (same flow as mobile app). Each product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
     inputSchema: {
       image_path: z.string().min(1).optional(),
       image_base64: z.string().min(1).optional(),
@@ -275,7 +287,7 @@ server.registerTool(
       ...searchParams,
     });
 
-    return asToolResult({
+    return asToolResultWithPurchaseLinks({
       uploaded_image_url: imageUrl,
       ...data,
     });
@@ -286,14 +298,15 @@ server.registerTool(
   "get_product_by_handle",
   {
     title: "Get Product By Handle",
-    description: "Fetch a single product document by product handle.",
+    description:
+      "Fetch a single product document by product handle. The product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
     },
   },
   async ({ handle }) => {
     const data = await apiGet(`/products/handle/${encodeURIComponent(handle)}`);
-    return asToolResult(data);
+    return asToolResultWithPurchaseLinks(data);
   }
 );
 
@@ -302,7 +315,7 @@ server.registerTool(
   {
     title: "Search Alternatives In Budget",
     description:
-      "Find product alternatives within a selected budget range using product image similarity (same logic as extension).",
+      "Find product alternatives within a selected budget range using product image similarity (same logic as extension). Every product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       budget_range: z.enum(["0-1500", "1501-3000", "3001-5000", "5000+"]).default("1501-3000"),
@@ -360,7 +373,7 @@ server.registerTool(
       .filter((p) => p?.handle && p.handle !== handle)
       .slice(0, limit);
 
-    return asToolResult({
+    return asToolResultWithPurchaseLinks({
       budget_range,
       source_handle: handle,
       source_image_url: mainImage || null,
@@ -375,7 +388,8 @@ server.registerTool(
   "get_recommended_outfits",
   {
     title: "Get Recommended Outfits",
-    description: "Get recommended outfits by handle using the same /looks request pattern as extension.",
+    description:
+      "Get recommended outfits by handle using the same /looks request pattern as extension. Every nested product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       page: z.number().int().min(1).max(1000).default(1),
@@ -402,7 +416,7 @@ server.registerTool(
       pagination = data.data.pagination ?? null;
     }
 
-    return asToolResult({
+    return asToolResultWithPurchaseLinks({
       handle,
       looks,
       pagination,
