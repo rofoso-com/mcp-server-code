@@ -9,7 +9,8 @@
   },
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "publishConfig": {
     "access": "public"
@@ -19,9 +20,18 @@
     "dev": "node --watch src/index.js",
     "check": "node --check src/index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "polopan",
+    "fashion",
+    "ecommerce",
+    "search",
+    "products",
+    "outfits"
+  ],
+  "author": "PoloPan",
+  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.3.6"
