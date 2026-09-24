@@ -1,22 +1,41 @@
-# PoloPan Products MCP
+# polopan mcp server
 
-PoloPan product search and outfits as a **Model Context Protocol** server — public, no PoloPan account required.
+find clothes faster, deconstruct outfit photos with AI bounding boxes, check real-time size stock, get full occasion looks, and checkout in 1 click.
 
-Traffic flow:
+## what you can do
 
-```text
-MCP client (Cursor, Claude, …) → https://mcp-server.polopan.com/mcp → apiv2.polopan.com
-```
+### 1. search by words or image
+* **text search**: type what you want, like *"birthday dress under 3000"*, with instant size and price filters.
+* **visual search**: upload a photo or share an image link to find identical or visually similar items.
 
-Browsers cannot call `apiv2` catalog APIs directly (domain / CORS / secret). Only the hosted MCP service holds the upstream secret.
+### 2. deconstruct full outfit photos ("shop the look")
+* upload any photo or influencer screenshot to detect individual pieces with bounding boxes (**Dress**, **Top**, **Bottom**, **Footwear**, **Bag**) and find exact catalog matches for each piece.
+
+### 3. real-time size stock & pricing check
+* verify whether a shopper's specific size is in stock right now, get live prices with discount %, shipping SLAs, and return policies before making a recommendation.
+
+### 4. discover full looks by occasion
+* get curated, coordinated outfits (outfit + footwear + bag + jewelry) styled for specific occasions: **Wedding**, **Cocktail**, **Party**, **Date Night**, **Club Night**, **Brunch**, and **Casual**.
+
+### 5. direct 1-click checkout links (shopify checkout kit style)
+* generate instant 1-click purchase URLs with pre-selected sizes and coupon codes so shoppers skip browsing and buy immediately.
+
+### 6. find budget alternatives
+* if a user likes a product but wants options matching their budget, discover visually similar alternatives in distinct price tiers.
 
 ---
 
-## Hosted MCP (recommended)
+## setup
 
-**Endpoint:** `https://mcp-server.polopan.com/mcp`
+### install in cursor (deeplink)
 
-Add to `~/.cursor/mcp.json`:
+[![install mcp server](https://cursor.com/deeplink/mcp-install-dark.svg)](https://polopan.com/mcp/cursor)
+
+### recommended for uninterrupted connection: hosted mcp (no local Node)
+
+add this to your `~/.cursor/mcp.json`:
+
+**canonical domain**
 
 ```json
 {
@@ -30,63 +49,84 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
-Reload MCP in Cursor after saving.
+**or direct Cloud Run URL**
 
-### Rate limits (per IP, no login)
-
-| Tier | Tools | Default |
-|------|--------|---------|
-| **Search** | `search_products_text`, `search_products_image` | 30 / min, 180 / hour |
-| **Catalog** | `get_product_by_handle`, `search_alternatives_in_budget`, `get_recommended_outfits` | 45 / min, 300 / hour |
-| **Upload** | `search_products_image_upload` | **2 / min, 10 / hour** |
-| **Transport** | All `/mcp` JSON-RPC | 90 / min burst cap |
-
-When limited, clients receive HTTP **429** with `Retry-After`.
-
----
-
-## npm package (local stdio)
-
-Published as [`polopan-products-mcp`](https://www.npmjs.com/package/polopan-products-mcp).
-
-**For end users:** use the **hosted URL** above. The npm stdio binary is for local development only and does **not** ship API secrets.
-
-```bash
-npx -y polopan-products-mcp
+```json
+{
+  "mcpServers": {
+    "polopan-products": {
+      "type": "http",
+      "url": "https://polopan-mcp-products-1040520402300.asia-southeast1.run.app/mcp",
+      "headers": {}
+    }
+  }
+}
 ```
 
-Maintainers running stdio against apiv2 must set (never commit):
+save and reload Cursor.
 
-```bash
-export POLOPAN_API_BASE_URL=https://apiv2.polopan.com
-export POLOPAN_MCP_SECRET_KEY='<same value as server POLOPAN_MCP_SECRET_KEY>'
-export POLOPAN_MCP_USER_AGENT=PoloPan-MCP-Public
+### optional: local npm / npx (stdio)
+
+if you prefer running the package on your machine:
+
+```json
+{
+  "mcpServers": {
+    "polopan-products": {
+      "command": "npx",
+      "args": ["-y", "polopan-products-mcp"]
+    }
+  }
+}
+```
+
+requires node.js 18+. if `ERR_MODULE_NOT_FOUND` from `@modelcontextprotocol/sdk`, clear stale npx cache: `rm -rf ~/.npm/_npx/*` then run `npx` again.
+
+---
+
+## prompts you can copy and use
+
+### shop the full look from a photo
+```text
+use polopan mcp to deconstruct this outfit photo into individual pieces (top, bottom, footwear, accessories).
+then find the closest match on PoloPan for each piece in size M, check live stock, and give me direct checkout links for each item.
+```
+
+### wedding guest outfits by occasion
+```text
+i need outfit ideas for an evening wedding reception.
+give me 5 complete looks for women with jewellery, shoes, and bag.
+check available sizes and give me the direct 1-click checkout links with total price.
+```
+
+### birthday party shopping
+```text
+i am looking for a dress for a birthday party. i am a 27 year old girl.
+use polopan mcp and give me complete outfits.
+include completing outfits items in every look with links and total price.
+show me budget, mid, and premium options.
+```
+
+### club night look
+```text
+budget is not a problem.
+size is 2xl/3xl.
+occasion is friends club night.
+use polopan mcp and suggest 8 complete looks.
+make them bold and stylish, and include total look price.
+```
+
+### look for cheaper options
+```text
+i want a printed shirt in the 1501-3000 budget range for a date night.
+then give me best complete outfits based on the top option to complete the set.
 ```
 
 ---
 
-## Requirements
+## testing
 
-- Node.js 18+
-- Network access to `https://mcp-server.polopan.com` (hosted) or apiv2 (stdio dev only)
-
----
-
-## Tools
-
-- `search_products_text` — text search  
-- `search_products_image` — search by image URL  
-- `search_products_image_upload` — upload image then search (strict rate limit)  
-- `get_product_by_handle` — product by handle  
-- `search_alternatives_in_budget` — similar items in a budget band  
-- `get_recommended_outfits` — outfit recommendations  
-
----
-
-## Server implementation
-
-Production HTTP MCP lives in the PoloPan API monorepo:
-
-`api/cloudrun/mcp_products_service/`
-
-Deploy notes: set `POLOPAN_MCP_SECRET_KEY` in Cloud Run / VM `.env` and Mongo `platform_settings` (`key: POLOPAN_MCP_SECRET_KEY`).
+Run the automated end-to-end test suite:
+```bash
+npm test
+```

@@ -68,6 +68,19 @@ function sanitizeProductObject(product, linkByHandle) {
   } else {
     delete next.url;
   }
+
+  if (Array.isArray(next.variants) && next.variants.length > 0) {
+    const inStockVariants = next.variants.filter((v) => {
+      if (typeof v.inventory_quantity === "number") return v.inventory_quantity > 0;
+      if (typeof v.available === "boolean") return v.available;
+      return true;
+    });
+    next.available_sizes = inStockVariants
+      .map((v) => v.option1 || v.title)
+      .filter((s) => typeof s === "string" && s.trim().length > 0);
+    next.is_in_stock = next.available_sizes.length > 0;
+  }
+
   return next;
 }
 
