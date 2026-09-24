@@ -1,6 +1,6 @@
 {
   "name": "polopan-products-mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Production-ready local MCP server for PoloPan products search",
   "type": "module",
   "main": "src/index.js",

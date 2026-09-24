@@ -206,7 +206,7 @@ function parseBudgetRange(budgetRange) {
 
 const server = new McpServer({
   name: "polopan-products",
-  version: "1.1.0",
+  version: "1.1.1",
 });
 
 server.registerTool(
@@ -436,78 +436,175 @@ server.registerTool(
   }
 );
 
+function findVariantMatch(variants, sizeQuery, sizeIndex) {
+  if (!Array.isArray(variants) || variants.length === 0) {
+    return { index: 0, variant: null };
+  }
+
+  if (typeof sizeIndex === "number" && sizeIndex >= 0 && sizeIndex < variants.length) {
+    return { index: sizeIndex, variant: variants[sizeIndex] };
+  }
+
+  if (sizeQuery !== undefined && sizeQuery !== null && String(sizeQuery).trim() !== "") {
+    const raw = String(sizeQuery).trim();
+    const clean = raw.toLowerCase();
+
+    if (/^\d+$/.test(raw)) {
+      const parsed = parseInt(raw, 10);
+      const hasShoeSize = variants.some((v) => {
+        const opt = (v.option1 || v.title || "").trim();
+        return opt === raw || opt.startsWith(`${raw} `) || opt.startsWith(`${raw}/`);
+      });
+      if (!hasShoeSize && parsed >= 0 && parsed < variants.length) {
+        return { index: parsed, variant: variants[parsed] };
+      }
+    }
+
+    // 1. Exact match
+    const exactIdx = variants.findIndex((v) => {
+      const opt = (v.option1 || v.title || "").trim().toLowerCase();
+      return opt === clean;
+    });
+    if (exactIdx >= 0) return { index: exactIdx, variant: variants[exactIdx] };
+
+    // 2. Word boundary / token match (e.g. "M" in "PINK / M")
+    const tokenIdx = variants.findIndex((v) => {
+      const opt = (v.option1 || v.title || "").toLowerCase();
+      const tokens = opt.split(/[\/\-,\s]+/).map((t) => t.trim());
+      return tokens.includes(clean);
+    });
+    if (tokenIdx >= 0) return { index: tokenIdx, variant: variants[tokenIdx] };
+
+    // 3. Indian / UK shoe size mapping (e.g. "6" -> "39", "7" -> "40", "5" -> "38", "4" -> "37", "8" -> "41", "9" -> "42")
+    const shoeSizeMap = { "3": "35", "4": "36", "5": "37", "6": "39", "7": "40", "8": "41", "9": "42" };
+    const mappedEu = shoeSizeMap[clean];
+    if (mappedEu) {
+      const mappedIdx = variants.findIndex((v) => {
+        const opt = (v.option1 || v.title || "").toLowerCase();
+        const tokens = opt.split(/[\/\-,\s]+/).map((t) => t.trim());
+        return tokens.includes(mappedEu) || opt.startsWith(mappedEu);
+      });
+      if (mappedIdx >= 0) return { index: mappedIdx, variant: variants[mappedIdx] };
+    }
+
+    // 4. Substring match
+    const subIdx = variants.findIndex((v) => {
+      const opt = (v.option1 || v.title || "").toLowerCase();
+      return opt.includes(clean);
+    });
+    if (subIdx >= 0) return { index: subIdx, variant: variants[subIdx] };
+  }
+
+  // Fallback to first available variant, or 0
+  const firstInStockIdx = variants.findIndex((v) => {
+    const isAvail = (typeof v.inventory_quantity !== "number" || v.inventory_quantity > 0) && v.available !== false;
+    return isAvail;
+  });
+  const fallbackIdx = firstInStockIdx >= 0 ? firstInStockIdx : 0;
+  return { index: fallbackIdx, variant: variants[fallbackIdx] || null };
+}
+
 server.registerTool(
   "check_variant_availability",
   {
     title: "Check Live Variant Stock & Size Availability",
     description:
-      "Verify real-time stock availability, live discounted pricing, available sizes, shipping time, and return policy for a product. Use this before recommending a product to ensure the shopper's size is in stock.",
+      "Verify real-time stock availability, live discounted pricing, available sizes, shipping time, and return policy for a product. Returns size options with direct checkout URLs (https://s.polopan.com/p/{handle}/{size_index}).",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       desired_size: z.string().optional(),
+      size_index: z.number().int().min(0).optional(),
     },
   },
-  async ({ handle, desired_size }) => {
-    const product = await apiGet(`/products/handle/${encodeURIComponent(handle)}`);
+  async ({ handle, desired_size, size_index }) => {
+    const product = await apiGet(`/products/handle/${encodeURIComponent(handle.trim())}`);
     const variants = Array.isArray(product?.variants) ? product.variants : [];
+    const basePurchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
 
+    const sizes = [];
     const availableSizes = [];
     const outOfStockSizes = [];
-    const sizePriceMap = {};
     let minPrice = null;
     let compareAtPrice = null;
 
-    for (const v of variants) {
-      const sizeLabel = v.option1 || v.title;
-      if (!sizeLabel) continue;
+    if (variants.length > 0) {
+      for (let idx = 0; idx < variants.length; idx++) {
+        const v = variants[idx];
+        const sizeLabel = v.option1 || v.title || `Option ${idx}`;
+        const isAvailable = (typeof v.inventory_quantity !== "number" || v.inventory_quantity > 0) && v.available !== false;
+        const checkoutUrl = `${basePurchaseUrl}/${idx}`;
 
-      const isAvailable = (v.inventory_quantity === undefined || v.inventory_quantity > 0) && v.available !== false;
-      if (isAvailable) {
-        availableSizes.push(sizeLabel);
-      } else {
-        outOfStockSizes.push(sizeLabel);
-      }
+        const sizeEntry = {
+          size_index: idx,
+          size: sizeLabel,
+          price: v.price,
+          compare_at_price: v.compare_at_price || v.compareAtPrice,
+          available: isAvailable,
+          inventory_quantity: typeof v.inventory_quantity === "number" ? v.inventory_quantity : (isAvailable ? 1 : 0),
+          checkout_url: checkoutUrl,
+        };
+        sizes.push(sizeEntry);
 
-      if (v.price !== undefined) {
-        sizePriceMap[sizeLabel] = v.price;
-        if (minPrice === null || v.price < minPrice) minPrice = v.price;
+        if (isAvailable) {
+          availableSizes.push(sizeLabel);
+        } else {
+          outOfStockSizes.push(sizeLabel);
+        }
+
+        if (v.price !== undefined && v.price !== null) {
+          if (minPrice === null || v.price < minPrice) minPrice = v.price;
+        }
+        if (v.compare_at_price || v.compareAtPrice) {
+          compareAtPrice = v.compare_at_price || v.compareAtPrice;
+        }
       }
-      if (v.compare_at_price || v.compareAtPrice) {
-        compareAtPrice = v.compare_at_price || v.compareAtPrice;
-      }
+    } else {
+      sizes.push({
+        size_index: 0,
+        size: "One Size",
+        price: product?.price || null,
+        compare_at_price: product?.compare_at_price || null,
+        available: true,
+        inventory_quantity: 1,
+        checkout_url: `${basePurchaseUrl}/0`,
+      });
+      availableSizes.push("One Size");
+      minPrice = product?.price || null;
+      compareAtPrice = product?.compare_at_price || null;
     }
 
-    let isDesiredSizeInStock = null;
-    if (desired_size) {
-      const cleanDesired = desired_size.trim().toLowerCase();
-      isDesiredSizeInStock = availableSizes.some((s) => s.toLowerCase() === cleanDesired);
-    }
-
-    const purchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle)}`;
-    const directCheckoutUrl = desired_size
-      ? `${purchaseUrl}?size=${encodeURIComponent(desired_size)}`
-      : purchaseUrl;
+    const { index: matchedIndex, variant: matchedVariant } = findVariantMatch(variants, desired_size, size_index);
+    const selectedSizeEntry = sizes[matchedIndex] || sizes[0];
+    const directCheckoutUrl = `${basePurchaseUrl}/${matchedIndex}`;
 
     const discountPercentage = (compareAtPrice && minPrice && compareAtPrice > minPrice)
       ? Math.round(((compareAtPrice - minPrice) / compareAtPrice) * 100)
       : 0;
 
     const stockSummary = {
-      handle,
+      handle: handle.trim(),
       title: product?.title || "",
       vendor: product?.vendor || "",
       is_in_stock: availableSizes.length > 0,
+      sizes,
       available_sizes: availableSizes,
       out_of_stock_sizes: outOfStockSizes,
-      desired_size: desired_size || null,
-      is_desired_size_in_stock: isDesiredSizeInStock,
-      current_price: minPrice,
+      selected_size: {
+        desired_size: desired_size || null,
+        size_index: matchedIndex,
+        size: selectedSizeEntry?.size || null,
+        is_in_stock: selectedSizeEntry?.available ?? false,
+        inventory_quantity: selectedSizeEntry?.inventory_quantity ?? 0,
+        price: selectedSizeEntry?.price ?? minPrice,
+        checkout_url: directCheckoutUrl,
+      },
+      current_price: selectedSizeEntry?.price ?? minPrice,
       original_price: compareAtPrice,
       discount_percentage: discountPercentage ? `${discountPercentage}%` : "0%",
       shipping_days: product?.shippingDays || product?.shipping_days || 1,
       return_allowed: product?.returnAllowed ?? product?.return_allowed ?? true,
       return_days: product?.returnDays || product?.return_days || 10,
-      purchase_url: purchaseUrl,
+      purchase_url: basePurchaseUrl,
       direct_checkout_url: directCheckoutUrl,
     };
 
@@ -528,21 +625,40 @@ server.registerTool(
   {
     title: "Get Direct Checkout URL",
     description:
-      "Generate a direct, pre-filled 1-click checkout purchase URL with pre-selected size and coupon parameters (Shopify Checkout Kit style) so the shopper can complete their purchase instantly.",
+      "Generate the direct 1-click checkout purchase URL for a specific product and size index (https://s.polopan.com/p/{handle}/{size_index}). Automatically matches size string or accepts size_index directly.",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       size: z.string().optional(),
+      size_index: z.number().int().min(0).optional(),
       quantity: z.number().int().min(1).max(10).default(1),
       coupon: z.string().optional(),
     },
   },
-  async ({ handle, size, quantity, coupon }) => {
-    const purchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
+  async ({ handle, size, size_index, quantity, coupon }) => {
+    const basePurchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
+
+    let resolvedIndex = typeof size_index === "number" ? size_index : null;
+    let resolvedSizeLabel = size || null;
+    let resolvedPrice = null;
+
+    if (resolvedIndex === null) {
+      try {
+        const product = await apiGet(`/products/handle/${encodeURIComponent(handle.trim())}`);
+        const variants = Array.isArray(product?.variants) ? product.variants : [];
+        const match = findVariantMatch(variants, size, undefined);
+        resolvedIndex = match.index;
+        if (match.variant) {
+          resolvedSizeLabel = match.variant.option1 || match.variant.title || size;
+          resolvedPrice = match.variant.price;
+        }
+      } catch (_) {
+        resolvedIndex = 0;
+      }
+    }
+
+    const baseCheckoutUrl = `${basePurchaseUrl}/${resolvedIndex}`;
     const params = new URLSearchParams();
 
-    if (size && size.trim()) {
-      params.append("size", size.trim());
-    }
     if (quantity && quantity > 1) {
       params.append("quantity", String(quantity));
     }
@@ -551,15 +667,17 @@ server.registerTool(
     }
 
     const queryString = params.toString();
-    const finalCheckoutUrl = queryString ? `${purchaseUrl}?${queryString}` : purchaseUrl;
+    const finalCheckoutUrl = queryString ? `${baseCheckoutUrl}?${queryString}` : baseCheckoutUrl;
 
     const result = {
       handle: handle.trim(),
-      size: size?.trim() || null,
+      size: resolvedSizeLabel,
+      size_index: resolvedIndex,
+      price: resolvedPrice,
       quantity,
       coupon: coupon?.trim() || null,
       checkout_url: finalCheckoutUrl,
-      instructions: "Provide this verified link to the user as the 1-click checkout button.",
+      instructions: "Provide this verified link to the user as the 1-click direct checkout button.",
     };
 
     return {

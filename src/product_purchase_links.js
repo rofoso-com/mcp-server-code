@@ -62,23 +62,55 @@ function sanitizeProductObject(product, linkByHandle) {
   const next = { ...product };
   stripCatalogUrlFields(next);
 
-  const purchaseUrl = linkByHandle.get(handle);
-  if (purchaseUrl) {
-    next.url = purchaseUrl;
-  } else {
-    delete next.url;
-  }
+  const rawPurchaseUrl = linkByHandle.get(handle) || `https://s.polopan.com/p/${encodeURIComponent(handle)}`;
+  const basePurchaseUrl = rawPurchaseUrl.replace(/\/$/, "");
+  next.url = basePurchaseUrl;
 
   if (Array.isArray(next.variants) && next.variants.length > 0) {
-    const inStockVariants = next.variants.filter((v) => {
-      if (typeof v.inventory_quantity === "number") return v.inventory_quantity > 0;
-      if (typeof v.available === "boolean") return v.available;
-      return true;
+    const enrichedVariants = next.variants.map((v, idx) => {
+      const isAvailable = (typeof v.inventory_quantity !== "number" || v.inventory_quantity > 0) && v.available !== false;
+      const checkoutUrl = `${basePurchaseUrl}/${idx}`;
+      return {
+        ...v,
+        size_index: idx,
+        checkout_url: checkoutUrl,
+        available: isAvailable,
+      };
     });
+
+    next.variants = enrichedVariants;
+
+    const inStockVariants = enrichedVariants.filter((v) => v.available);
+
     next.available_sizes = inStockVariants
       .map((v) => v.option1 || v.title)
       .filter((s) => typeof s === "string" && s.trim().length > 0);
-    next.is_in_stock = next.available_sizes.length > 0;
+
+    next.sizes = enrichedVariants.map((v) => ({
+      size_index: v.size_index,
+      size: v.option1 || v.title || `Option ${v.size_index}`,
+      price: v.price,
+      compare_at_price: v.compare_at_price || v.compareAtPrice,
+      available: v.available,
+      inventory_quantity: typeof v.inventory_quantity === "number" ? v.inventory_quantity : (v.available ? 1 : 0),
+      checkout_url: v.checkout_url,
+    }));
+
+    next.is_in_stock = inStockVariants.length > 0;
+  } else {
+    next.sizes = [
+      {
+        size_index: 0,
+        size: "One Size",
+        price: next.price || null,
+        compare_at_price: next.compare_at_price || null,
+        available: true,
+        inventory_quantity: 1,
+        checkout_url: `${basePurchaseUrl}/0`,
+      },
+    ];
+    next.available_sizes = ["One Size"];
+    next.is_in_stock = true;
   }
 
   return next;
