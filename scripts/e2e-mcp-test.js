@@ -101,16 +101,16 @@ async function runE2ETests() {
   });
   console.log(`✓ In Stock: ${stockRes.is_in_stock}`);
   console.log(`✓ Available Sizes: ${JSON.stringify(stockRes.available_sizes)}`);
-  console.log(`✓ Out of Stock Sizes: ${JSON.stringify(stockRes.out_of_stock_sizes)}`);
-  console.log(`✓ Desired Size ('${firstAvailableSize}') In Stock: ${stockRes.is_desired_size_in_stock}`);
+  console.log(`✓ Sizes with Checkout URLs: ${JSON.stringify(stockRes.sizes)}`);
+  console.log(`✓ Selected Size: ${JSON.stringify(stockRes.selected_size)}`);
   console.log(`✓ Current Price: ₹${stockRes.current_price} (MRP: ₹${stockRes.original_price}, Discount: ${stockRes.discount_percentage})`);
   console.log(`✓ Shipping SLA: ${stockRes.shipping_days} day(s), Return: ${stockRes.return_days} days`);
   console.log(`✓ Direct Checkout URL: ${stockRes.direct_checkout_url}`);
-  assert.equal(stockRes.is_desired_size_in_stock, true, "Desired size should be reported in stock");
-  assert(stockRes.direct_checkout_url.includes(encodeURIComponent(firstAvailableSize)), "Checkout URL must include size param");
-  console.log("✅ [TEST 4 PASSED] Real-time stock, pricing, and size availability verified.");
+  assert.equal(stockRes.selected_size.is_in_stock, true, "Desired size should be reported in stock");
+  assert(stockRes.direct_checkout_url.match(/https:\/\/s\.polopan\.com\/p\/[^\/]+\/\d+/), "Checkout URL must follow pattern https://s.polopan.com/p/{handle}/{size_index}");
+  console.log("✅ [TEST 4 PASSED] Real-time stock, pricing, and size_index checkout URLs verified.");
 
-  // 5. Direct Checkout URL Generator (Shopify Checkout Kit style)
+  // 5. Direct Checkout URL Generator (size selection -> /{size_index})
   console.log(`\n[TEST 5] Testing 'get_direct_checkout_url' for 1-click checkout...`);
   const checkoutRes = await callTool("get_direct_checkout_url", {
     handle: sampleHandle,
@@ -120,9 +120,9 @@ async function runE2ETests() {
   });
   console.log(`✓ Generated 1-Click Checkout URL: ${checkoutRes.checkout_url}`);
   assert(checkoutRes.checkout_url.startsWith("https://s.polopan.com/p/"), "Must be a verified s.polopan.com link");
-  assert(checkoutRes.checkout_url.includes("size=L"), "Must include size=L");
+  assert(checkoutRes.checkout_url.match(/https:\/\/s\.polopan\.com\/p\/[^\/]+\/\d+/), "Must append size_index (/0, /1, etc.)");
   assert(checkoutRes.checkout_url.includes("coupon=SAVE15"), "Must include coupon parameter");
-  console.log("✅ [TEST 5 PASSED] Direct checkout permalink generation verified.");
+  console.log("✅ [TEST 5 PASSED] Direct checkout permalink with /{size_index} generation verified.");
 
   // 6. Occasion Looks Discovery Test
   console.log("\n[TEST 6] Testing 'get_looks_by_occasion' ('Wedding & Reception')...");
