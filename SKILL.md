@@ -1,12 +1,12 @@
 ---
 name: polopan-fashion
 description: >-
-  Search PoloPan fashion catalog, discover apparel and accessories by text or image, find budget alternatives, and generate full outfit recommendations with verified s.polopan.com purchase links.
+  Search PoloPan fashion catalog, deconstruct outfit images with AI bounding boxes, discover occasion looks, check live SKU sizes/stock, and generate 1-click checkout purchase links with verified s.polopan.com links.
 ---
 
 # PoloPan Fashion & Products Skill
 
-This skill guides AI assistants on how to effectively query the **PoloPan Products MCP Server** to find fashion products, suggest budget alternatives, search visually by image, and recommend styled outfits.
+This skill guides AI assistants on how to query the **PoloPan Products MCP Server** to find apparel, deconstruct outfit photos into individual pieces, check real-time size stock, find budget alternatives, discover occasion-tailored looks, and generate direct 1-click checkout links.
 
 ---
 
@@ -14,33 +14,40 @@ This skill guides AI assistants on how to effectively query the **PoloPan Produc
 
 | Tool | Purpose | Key Arguments |
 | :--- | :--- | :--- |
-| `search_products_text` | Search products via natural language keywords & filters | `query`, `gender`, `price_min`, `price_max`, `size`, `vendor`, `sort_by`, `sort_order`, `page`, `page_size` |
-| `search_products_image` | Find visually similar items using an image URL | `image_url`, `gender`, `category`, `style`, `color`, `price_min`, `price_max` |
-| `search_products_image_upload` | Find items by uploading a local image file / base64 | `image_path` or `image_base64`, plus search filters |
-| `get_product_by_handle` | Retrieve full product metadata & inventory by handle | `handle` (e.g. `ajio_700504784_green`) |
+| `search_products_text` | Search products via natural language & filters | `query`, `gender`, `price_min`, `price_max`, `size`, `vendor`, `sort_by`, `sort_order`, `page`, `page_size` |
+| `search_products_image` | Find visually similar items using an image URL | `image_url`, `gender`, `price_min`, `price_max`, `size`, `vendor` |
+| `search_products_image_upload` | Find items by uploading local image / base64 | `image_path` or `image_base64`, plus search filters |
+| `detect_fashion_pieces` | Deconstruct outfit photo into pieces (Tops, Bottoms, Shoes, Bags) | `image_url`, `image_path`, `image_base64`, `threshold` |
+| `get_looks_by_occasion` | Discover complete curated looks for events (Wedding, Party, Date Night) | `occasion`, `gender` (`women`/`men`), `age`, `page`, `page_size`, `vendor` |
+| `get_product_by_handle` | Retrieve full product document & metadata | `handle` (e.g. `shopify_11206`) |
+| `check_variant_availability` | Verify real-time stock, in-stock sizes, live pricing, and shipping days | `handle`, `desired_size` (optional) |
+| `get_direct_checkout_url` | Generate 1-click direct checkout permalink with size & coupon | `handle`, `size`, `quantity`, `coupon` |
 | `search_alternatives_in_budget` | Find visually similar alternatives in a target price bracket | `handle`, `budget_range` (`0-1500`, `1501-3000`, `3001-5000`, `5000+`), `limit` |
-| `get_recommended_outfits` | Get curated matching outfits for a product | `handle`, `page`, `page_size` |
+| `get_recommended_outfits` | Get complementary matching outfits by handle or occasion | `handle` OR `occasion`, `gender`, `page`, `page_size` |
 
 ---
 
-## 🎯 Best Practices for Agents
+## 🎯 Best Practices for AI Agents
 
-### 1. Handling Queries & Filters
-* **Gender Normalization**: Use `"male"` for men / boys, `"female"` for women / girls (the server automatically normalizes `"men"` and `"women"`).
-* **Price Filtering**: Always pass numerical values for `price_min` and `price_max` (e.g. `price_max: 500` when the user asks for "under 500").
-* **Sorting**: Default is `relevance`. Use `sort_by: "price"` with `sort_order: "asc"` when the user specifically asks for the cheapest options.
+### 1. Photo Deconstruction Workflow ("Shop the Look")
+When a user uploads an image or photo of someone's outfit:
+1. Call `detect_fashion_pieces` to identify all garment and accessory bounding boxes (`Dress`, `Upper-body garment`, `Lower-body garment`, `Footwear`, `Bag`).
+2. For each detected piece, query PoloPan using `search_products_text` or `search_products_image`.
+3. Present a complete piece-by-piece breakdown with image previews and buyable links.
 
-### 2. Presenting Product Results
-When showing product recommendations to the user, format them in a clean Markdown table with:
-* **Product Title & Image Link**
-* **Brand / Vendor**
-* **Selling Price** and **Original MRP** (with discount % if applicable)
-* **Available Sizes** (filter variants where `inventory_quantity > 0`)
-* **Purchase Link**: Always use the returned `url` field (`https://s.polopan.com/p/{handle}`).
+### 2. Live Sizing & Stock Assurance
+Before recommending any product to the user:
+* Verify available sizes via `check_variant_availability` or check `available_sizes` in product payloads.
+* Never recommend a size that is out of stock.
 
-### 3. Outfits & Budget Alternatives Workflow
-* **Alternative Discovery**: When a user likes a product but finds it expensive, call `search_alternatives_in_budget` with the product's `handle` and a lower `budget_range`.
-* **Complete Looks**: When a user asks "how should I style this?" or "give me an outfit", call `get_recommended_outfits` with the item's `handle` to retrieve complementary pieces (tops, bottoms, footwear, accessories).
+### 3. Direct 1-Click Checkout Links (Shopify Checkout Kit Style)
+* Use `get_direct_checkout_url` with the user's selected `size` and any applicable `coupon`.
+* Present the verified `https://s.polopan.com/p/{handle}?size={size}` link so the user can purchase in a single click without having to browse or re-select sizes.
+
+### 4. Occasion Looks Discovery
+When asked for wedding, party, club night, or vacation outfits:
+* Call `get_looks_by_occasion` with the specific occasion (e.g. `occasion: "Wedding & Reception"`, `gender: "women"`).
+* Each look includes full complementary components (garment + footwear + bag + jewelry).
 
 ---
 

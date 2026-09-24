@@ -11,6 +11,7 @@ import {
 
 const config = {
   baseUrl: (process.env.POLOPAN_API_BASE_URL || "https://apiv2.polopan.com").replace(/\/$/, ""),
+  fashionDetectUrl: (process.env.POLOPAN_FASHION_DETECT_BASE_URL || "https://fashion-detect.polopan.com").replace(/\/$/, ""),
   secretKey: (process.env.POLOPAN_MCP_SECRET_KEY || "MCP").trim(),
   userAgent: (process.env.POLOPAN_MCP_USER_AGENT || "PoloPan-MCP").trim(),
   timeoutMs: Number(process.env.POLOPAN_MCP_TIMEOUT_MS || 20_000),
@@ -58,6 +59,15 @@ function normalizeGenderValue(gender) {
   if (normalized === "men") return "male";
   if (normalized === "women") return "female";
   return gender;
+}
+
+function normalizeFeedGender(gender) {
+  if (typeof gender !== "string") return "women";
+  const normalized = gender.trim().toLowerCase();
+  if (normalized === "male" || normalized === "men" || normalized === "man" || normalized === "boy") {
+    return "men";
+  }
+  return "women";
 }
 
 async function fetchWithTimeout(url, options = {}) {
@@ -146,6 +156,28 @@ async function apiUploadImage({ fileBytes, contentType, expiryHours = 24 }) {
   return response.json();
 }
 
+async function apiDetectFashion({ fileBytes, contentType = "image/jpeg", threshold = 0.22 }) {
+  const url = `${config.fashionDetectUrl}/fashion/detect?threshold=${encodeURIComponent(threshold)}`;
+  const form = new FormData();
+  form.append("file", new Blob([fileBytes], { type: contentType }), "fashion_image.jpg");
+
+  const headers = getHeaders();
+  delete headers["content-type"];
+
+  const response = await fetchWithTimeout(url, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`POST /fashion/detect failed (${response.status}): ${body.slice(0, 500)}`);
+  }
+
+  return response.json();
+}
+
 const purchaseLinkOptions = buildPurchaseLinkResolverOptions({
   config,
   getHeaders,
@@ -174,7 +206,7 @@ function parseBudgetRange(budgetRange) {
 
 const server = new McpServer({
   name: "polopan-products",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 server.registerTool(
@@ -182,7 +214,7 @@ server.registerTool(
   {
     title: "Search Products By Text",
     description:
-      "Search PoloPan products using a text query and optional filters. Each product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
+      "Search PoloPan products using a text query and optional filters. Returns products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).",
     inputSchema: {
       query: z.string().min(1, "query is required"),
       page: z.number().int().min(1).max(1000).default(1),
@@ -207,7 +239,7 @@ server.registerTool(
   {
     title: "Search Products By Image URL",
     description:
-      "Search PoloPan products using image_url and optional filters. Each product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
+      "Search PoloPan products using image_url and optional filters. Returns products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).",
     inputSchema: {
       image_url: z.string().url("image_url must be a valid URL"),
       page: z.number().int().min(1).max(1000).default(1),
@@ -233,7 +265,7 @@ server.registerTool(
   {
     title: "Search Products By Uploaded Image",
     description:
-      "Upload a local image (or base64 bytes) and search PoloPan products using the uploaded image URL (same flow as mobile app). Each product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
+      "Upload a local image file (or base64 string) and search PoloPan products using the uploaded image URL. Returns products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).",
     inputSchema: {
       image_path: z.string().min(1).optional(),
       image_base64: z.string().min(1).optional(),
@@ -295,11 +327,105 @@ server.registerTool(
 );
 
 server.registerTool(
+  "detect_fashion_pieces",
+  {
+    title: "Detect Fashion Pieces & Bounding Boxes",
+    description:
+      "Deconstruct an outfit image or photo into individual fashion pieces (e.g. Upper-body garment, Lower-body garment, Dress, Footwear, Bag, Headwear) with bounding box coordinates and confidence scores. Use this to break down full-body look photos and search for matching catalog items for each piece individually.",
+    inputSchema: {
+      image_path: z.string().min(1).optional(),
+      image_base64: z.string().min(1).optional(),
+      image_url: z.string().url().optional(),
+      threshold: z.number().min(0.05).max(0.95).default(0.22),
+    },
+  },
+  async ({ image_path, image_base64, image_url, threshold }) => {
+    if (!image_path && !image_base64 && !image_url) {
+      throw new Error("One of image_path, image_base64, or image_url is required.");
+    }
+
+    let imageBytes;
+    let contentType = "image/jpeg";
+
+    if (image_path) {
+      imageBytes = await readFile(image_path);
+      contentType = guessContentType(image_path);
+    } else if (image_base64) {
+      imageBytes = Buffer.from(image_base64, "base64");
+      if (!imageBytes.length) {
+        throw new Error("image_base64 is empty or invalid.");
+      }
+    } else if (image_url) {
+      const resp = await fetchWithTimeout(image_url);
+      if (!resp.ok) {
+        throw new Error(`Failed to download image from URL (${resp.status})`);
+      }
+      contentType = resp.headers.get("content-type") || "image/jpeg";
+      const ab = await resp.arrayBuffer();
+      imageBytes = Buffer.from(ab);
+    }
+
+    const detectionResult = await apiDetectFashion({
+      fileBytes: imageBytes,
+      contentType,
+      threshold,
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(detectionResult),
+        },
+      ],
+      structuredContent: detectionResult,
+    };
+  }
+);
+
+server.registerTool(
+  "get_looks_by_occasion",
+  {
+    title: "Get Looks By Occasion",
+    description:
+      "Discover complete curated fashion looks styled for specific occasions (e.g., 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'). Returns fully coordinated outfits (tops, bottoms, footwear, accessories) with verified s.polopan.com purchase links and available sizes.",
+    inputSchema: {
+      occasion: z.string().optional(),
+      gender: z.enum(["women", "men", "female", "male"]).default("women"),
+      age: z.number().int().min(16).max(99).default(25),
+      page: z.number().int().min(1).max(1000).default(1),
+      page_size: z.number().int().min(1).max(100).default(10),
+      vendor: z.array(z.string()).optional(),
+    },
+  },
+  async ({ occasion, gender, age, page, page_size, vendor }) => {
+    const normalizedGender = normalizeFeedGender(gender);
+    const payload = {
+      gender: normalizedGender,
+      age,
+      page,
+      page_size,
+      use_sample_vector: true,
+    };
+
+    if (occasion && occasion.trim()) {
+      payload.occasion = occasion.trim();
+    }
+    if (Array.isArray(vendor) && vendor.length > 0) {
+      payload.vendor = vendor;
+    }
+
+    const data = await apiPost("/looks/feed/public", payload);
+    return asToolResultWithPurchaseLinks(data);
+  }
+);
+
+server.registerTool(
   "get_product_by_handle",
   {
     title: "Get Product By Handle",
     description:
-      "Fetch a single product document by product handle. The product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
+      "Fetch a single product document by product handle. Returns detailed metadata, variants, in-stock sizes, price details, and the verified short purchase link (https://s.polopan.com/p/{handle}).",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
     },
@@ -307,6 +433,144 @@ server.registerTool(
   async ({ handle }) => {
     const data = await apiGet(`/products/handle/${encodeURIComponent(handle)}`);
     return asToolResultWithPurchaseLinks(data);
+  }
+);
+
+server.registerTool(
+  "check_variant_availability",
+  {
+    title: "Check Live Variant Stock & Size Availability",
+    description:
+      "Verify real-time stock availability, live discounted pricing, available sizes, shipping time, and return policy for a product. Use this before recommending a product to ensure the shopper's size is in stock.",
+    inputSchema: {
+      handle: z.string().min(1, "handle is required"),
+      desired_size: z.string().optional(),
+    },
+  },
+  async ({ handle, desired_size }) => {
+    const product = await apiGet(`/products/handle/${encodeURIComponent(handle)}`);
+    const variants = Array.isArray(product?.variants) ? product.variants : [];
+
+    const availableSizes = [];
+    const outOfStockSizes = [];
+    const sizePriceMap = {};
+    let minPrice = null;
+    let compareAtPrice = null;
+
+    for (const v of variants) {
+      const sizeLabel = v.option1 || v.title;
+      if (!sizeLabel) continue;
+
+      const isAvailable = (v.inventory_quantity === undefined || v.inventory_quantity > 0) && v.available !== false;
+      if (isAvailable) {
+        availableSizes.push(sizeLabel);
+      } else {
+        outOfStockSizes.push(sizeLabel);
+      }
+
+      if (v.price !== undefined) {
+        sizePriceMap[sizeLabel] = v.price;
+        if (minPrice === null || v.price < minPrice) minPrice = v.price;
+      }
+      if (v.compare_at_price || v.compareAtPrice) {
+        compareAtPrice = v.compare_at_price || v.compareAtPrice;
+      }
+    }
+
+    let isDesiredSizeInStock = null;
+    if (desired_size) {
+      const cleanDesired = desired_size.trim().toLowerCase();
+      isDesiredSizeInStock = availableSizes.some((s) => s.toLowerCase() === cleanDesired);
+    }
+
+    const purchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle)}`;
+    const directCheckoutUrl = desired_size
+      ? `${purchaseUrl}?size=${encodeURIComponent(desired_size)}`
+      : purchaseUrl;
+
+    const discountPercentage = (compareAtPrice && minPrice && compareAtPrice > minPrice)
+      ? Math.round(((compareAtPrice - minPrice) / compareAtPrice) * 100)
+      : 0;
+
+    const stockSummary = {
+      handle,
+      title: product?.title || "",
+      vendor: product?.vendor || "",
+      is_in_stock: availableSizes.length > 0,
+      available_sizes: availableSizes,
+      out_of_stock_sizes: outOfStockSizes,
+      desired_size: desired_size || null,
+      is_desired_size_in_stock: isDesiredSizeInStock,
+      current_price: minPrice,
+      original_price: compareAtPrice,
+      discount_percentage: discountPercentage ? `${discountPercentage}%` : "0%",
+      shipping_days: product?.shippingDays || product?.shipping_days || 1,
+      return_allowed: product?.returnAllowed ?? product?.return_allowed ?? true,
+      return_days: product?.returnDays || product?.return_days || 10,
+      purchase_url: purchaseUrl,
+      direct_checkout_url: directCheckoutUrl,
+    };
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(stockSummary),
+        },
+      ],
+      structuredContent: stockSummary,
+    };
+  }
+);
+
+server.registerTool(
+  "get_direct_checkout_url",
+  {
+    title: "Get Direct Checkout URL",
+    description:
+      "Generate a direct, pre-filled 1-click checkout purchase URL with pre-selected size and coupon parameters (Shopify Checkout Kit style) so the shopper can complete their purchase instantly.",
+    inputSchema: {
+      handle: z.string().min(1, "handle is required"),
+      size: z.string().optional(),
+      quantity: z.number().int().min(1).max(10).default(1),
+      coupon: z.string().optional(),
+    },
+  },
+  async ({ handle, size, quantity, coupon }) => {
+    const purchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
+    const params = new URLSearchParams();
+
+    if (size && size.trim()) {
+      params.append("size", size.trim());
+    }
+    if (quantity && quantity > 1) {
+      params.append("quantity", String(quantity));
+    }
+    if (coupon && coupon.trim()) {
+      params.append("coupon", coupon.trim());
+    }
+
+    const queryString = params.toString();
+    const finalCheckoutUrl = queryString ? `${purchaseUrl}?${queryString}` : purchaseUrl;
+
+    const result = {
+      handle: handle.trim(),
+      size: size?.trim() || null,
+      quantity,
+      coupon: coupon?.trim() || null,
+      checkout_url: finalCheckoutUrl,
+      instructions: "Provide this verified link to the user as the 1-click checkout button.",
+    };
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result),
+        },
+      ],
+      structuredContent: result,
+    };
   }
 );
 
@@ -389,38 +653,58 @@ server.registerTool(
   {
     title: "Get Recommended Outfits",
     description:
-      "Get recommended outfits by handle using the same /looks request pattern as extension. Every nested product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
+      "Get complete recommended outfits. Pass a product 'handle' to find complementary items that style with it, OR pass an 'occasion' (e.g. 'Wedding', 'Party', 'Cocktail', 'Date Night') and 'gender' to discover full occasion looks. Every product includes a verified s.polopan.com purchase link and available sizes.",
     inputSchema: {
-      handle: z.string().min(1, "handle is required"),
+      handle: z.string().optional(),
+      occasion: z.string().optional(),
+      gender: z.enum(["women", "men", "female", "male"]).default("women"),
       page: z.number().int().min(1).max(1000).default(1),
       page_size: z.number().int().min(1).max(100).default(20),
     },
   },
-  async ({ handle, page, page_size }) => {
-    const data = await apiPost("/looks", {
-      handle,
-      page,
-      page_size,
-    });
+  async ({ handle, occasion, gender, page, page_size }) => {
+    if (handle && handle.trim()) {
+      const data = await apiPost("/looks", {
+        handle: handle.trim(),
+        page,
+        page_size,
+      });
 
-    let looks = [];
-    let pagination = null;
+      let looks = [];
+      let pagination = null;
 
-    if (Array.isArray(data?.looks)) {
-      looks = data.looks;
-      pagination = data.pagination ?? null;
-    } else if (Array.isArray(data)) {
-      looks = data;
-    } else if (Array.isArray(data?.data?.looks)) {
-      looks = data.data.looks;
-      pagination = data.data.pagination ?? null;
+      if (Array.isArray(data?.looks)) {
+        looks = data.looks;
+        pagination = data.pagination ?? null;
+      } else if (Array.isArray(data)) {
+        looks = data;
+      } else if (Array.isArray(data?.data?.looks)) {
+        looks = data.data.looks;
+        pagination = data.data.pagination ?? null;
+      }
+
+      return asToolResultWithPurchaseLinks({
+        handle,
+        looks,
+        pagination,
+      });
     }
 
-    return asToolResultWithPurchaseLinks({
-      handle,
-      looks,
-      pagination,
-    });
+    // Occasion-based looks discovery
+    const normalizedGender = normalizeFeedGender(gender);
+    const payload = {
+      gender: normalizedGender,
+      age: 25,
+      page,
+      page_size,
+      use_sample_vector: true,
+    };
+    if (occasion && occasion.trim()) {
+      payload.occasion = occasion.trim();
+    }
+
+    const data = await apiPost("/looks/feed/public", payload);
+    return asToolResultWithPurchaseLinks(data);
   }
 );
 
