@@ -8,6 +8,9 @@ import {
   applyPurchaseLinksToMcpPayload,
   buildPurchaseLinkResolverOptions,
   extractProductDetailsTable,
+  formatReturnPolicy,
+  formatShippingPolicy,
+  isLookFullyInStock,
 } from "./product_purchase_links.js";
 
 const config = {
@@ -186,6 +189,9 @@ const purchaseLinkOptions = buildPurchaseLinkResolverOptions({
 
 async function asToolResultWithPurchaseLinks(data) {
   const sanitized = await applyPurchaseLinksToMcpPayload(data, purchaseLinkOptions);
+  if (Array.isArray(sanitized?.looks)) {
+    sanitized.looks = sanitized.looks.filter(isLookFullyInStock);
+  }
   return {
     content: [
       {
@@ -207,7 +213,7 @@ function parseBudgetRange(budgetRange) {
 
 const server = new McpServer({
   name: "polopan-products",
-  version: "1.1.1",
+  version: "1.2.3",
 });
 
 server.registerTool(
@@ -215,7 +221,7 @@ server.registerTool(
   {
     title: "Search Products By Text",
     description:
-      "Search PoloPan products using a text query and optional filters. Returns products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).",
+      "Search PoloPan products using a text query and optional filters. Returns products with available in-stock sizes, specifications table, shipping/return policies, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always tell the user the available sizes for items, and display returning & shipping policies (Negative return days = 'Exchange only |X| days').\n2. When presenting/shortlisting products, display the product specifications table.\n3. Return the base link (https://s.polopan.com/p/{handle}) during browsing. Provide the direct checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
       query: z.string().min(1, "query is required"),
       page: z.number().int().min(1).max(1000).default(1),
@@ -389,7 +395,7 @@ server.registerTool(
   {
     title: "Get Looks By Occasion",
     description:
-      "Discover complete curated fashion looks styled for specific occasions (e.g., 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'). Returns fully coordinated outfits (tops, bottoms, footwear, accessories) with verified s.polopan.com purchase links and available sizes.",
+      "Discover complete curated fashion looks styled for specific occasions (e.g., 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'). All returned looks are verified 100% in-stock (any look with an out-of-stock item is excluded).\n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always inform the user of available in-stock sizes, shipping SLA, and return policy for each item. Format negative return days as 'Exchange only |X| days' (e.g. -7 -> 'Exchange only 7 days').\n2. When shortlisting a look, render the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n3. Provide the clean base link (https://s.polopan.com/p/{handle}) during browsing/shortlisting. Provide direct 1-click checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
       occasion: z.string().optional(),
       gender: z.enum(["women", "men", "female", "male"]).default("women"),
@@ -510,7 +516,7 @@ server.registerTool(
   {
     title: "Check Live Variant Stock, Product Details & Sizing",
     description:
-      "Verify real-time stock availability, live discounted pricing, product specifications table (Fabric, Collar, Sleeves, Fit, Bottom, Care Instructions), and available sizes for a product. \n\nINSTRUCTIONS FOR AI ASSISTANTS:\n1. Always display the 'product_details' table matching the mobile app QuickView.\n2. Present the in-stock 'available_sizes'.\n3. ASK the user to pick/confirm their size from the available options BEFORE providing the final direct 1-click checkout URL (https://s.polopan.com/p/{handle}/{size_index}).",
+      "Verify real-time stock availability, live discounted pricing, product specifications table (Fabric, Collar, Sleeves, Fit, Bottom, Care Instructions), shipping/return policies, and available sizes for a product. \n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always tell the user the available in-stock sizes, and display returning & shipping policies (Negative return days = 'Exchange only |X| days').\n2. When presenting/shortlisting products, display the product specifications table.\n3. Return the base link (https://s.polopan.com/p/{handle}) during browsing. Provide the direct checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       desired_size: z.string().optional(),
@@ -583,6 +589,10 @@ server.registerTool(
       : 0;
 
     const productDetails = extractProductDetailsTable(product);
+    const shippingDays = Number(product?.shippingDays || product?.shipping_days || 1) || 1;
+    const returnAllowed = product?.returnAllowed ?? product?.return_allowed ?? true;
+    const returnDays = typeof product?.returnDays === "number" ? product.returnDays : (typeof product?.return_days === "number" ? product.return_days : 10);
+    const cancellationAllowed = product?.cancellationAllowed ?? product?.cancellation_allowed ?? true;
 
     const stockSummary = {
       handle: handle.trim(),
@@ -605,9 +615,13 @@ server.registerTool(
       current_price: selectedSizeEntry?.price ?? minPrice,
       original_price: compareAtPrice,
       discount_percentage: discountPercentage ? `${discountPercentage}%` : "0%",
-      shipping_days: product?.shippingDays || product?.shipping_days || 1,
-      return_allowed: product?.returnAllowed ?? product?.return_allowed ?? true,
-      return_days: product?.returnDays || product?.return_days || 10,
+      shipping_days: shippingDays,
+      return_allowed: returnAllowed,
+      return_days: returnDays,
+      shipping_policy_text: formatShippingPolicy(shippingDays),
+      return_policy_text: formatReturnPolicy(returnAllowed, returnDays),
+      cancellation_allowed: cancellationAllowed,
+      cancellation_policy_text: cancellationAllowed ? "Allowed before dispatch" : "Non-cancellable once placed",
       purchase_url: basePurchaseUrl,
       direct_checkout_url: directCheckoutUrl,
     };
@@ -629,7 +643,7 @@ server.registerTool(
   {
     title: "Get Direct Checkout URL",
     description:
-      "Generate the direct 1-click checkout purchase URL for a specific product and size index (https://s.polopan.com/p/{handle}/{size_index}). INSTRUCTION: Only generate or provide this link after the user has explicitly selected/confirmed their size from the available in-stock options.",
+      "Generate the direct 1-click checkout purchase URL for a specific product and size index (https://s.polopan.com/p/{handle}/{size_index}).\n\nMANDATORY AGENT INSTRUCTION:\nOnly generate or provide this direct link with /{size_index} after the user has explicitly selected/confirmed their size from the available in-stock options. If there is any confusion regarding sizes or if the user is still browsing, provide ONLY the clean base link (https://s.polopan.com/p/{handle}) without /{size_index}.",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       size: z.string().optional(),
@@ -775,7 +789,7 @@ server.registerTool(
   {
     title: "Get Recommended Outfits",
     description:
-      "Get complete recommended outfits. Pass a product 'handle' to find complementary items that style with it, OR pass an 'occasion' (e.g. 'Wedding', 'Party', 'Cocktail', 'Date Night') and 'gender' to discover full occasion looks. Every product includes a verified s.polopan.com purchase link and available sizes.",
+      "Get complete recommended outfits. Pass a product 'handle' to find complementary items that style with it, OR pass an 'occasion' (e.g. 'Wedding', 'Party', 'Cocktail', 'Date Night') and 'gender' to discover full occasion looks. All returned looks are verified 100% in-stock (any look with an out-of-stock item is excluded).\n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always inform the user of available in-stock sizes, shipping SLA, and return policy for each item. Format negative return days as 'Exchange only |X| days' (e.g. -7 -> 'Exchange only 7 days').\n2. When shortlisting a look, render the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n3. Provide the base link (https://s.polopan.com/p/{handle}) during shortlisting. Provide direct 1-click checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
       handle: z.string().optional(),
       occasion: z.string().optional(),

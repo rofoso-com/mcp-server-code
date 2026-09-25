@@ -57,6 +57,65 @@ function stripCatalogUrlFields(product) {
   }
 }
 
+/**
+ * Format human-readable return & exchange policy string.
+ * Negative return days indicates exchange-only policy for |X| days.
+ */
+export function formatReturnPolicy(returnAllowed, returnDays) {
+  if (returnAllowed === false || returnDays === 0) {
+    return "No returns (Final sale)";
+  }
+  if (typeof returnDays === "number" && returnDays < 0) {
+    const d = Math.abs(returnDays);
+    return `Exchange only ${d} days`;
+  }
+  if (typeof returnDays === "number" && returnDays > 0) {
+    return `${returnDays} days easy returns`;
+  }
+  return "10 days return";
+}
+
+/**
+ * Format human-readable shipping dispatch SLA string.
+ */
+export function formatShippingPolicy(shippingDays) {
+  const days = Number(shippingDays) || 1;
+  return days === 1 ? "Fast dispatch (Shipped within 1 day)" : `Shipped within ${days} days`;
+}
+
+/**
+ * Check if a look is 100% in stock (every component and product must be available).
+ */
+export function isLookFullyInStock(look) {
+  if (!look || typeof look !== "object") return false;
+
+  if (Array.isArray(look.outfit_components) && look.outfit_components.length > 0) {
+    for (const comp of look.outfit_components) {
+      if (Array.isArray(comp.products) && comp.products.length > 0) {
+        for (const p of comp.products) {
+          if (p && typeof p === "object") {
+            if (p.is_in_stock === false || (Array.isArray(p.available_sizes) && p.available_sizes.length === 0)) {
+              return false;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(look.products) && look.products.length > 0) {
+    for (const p of look.products) {
+      if (p && typeof p === "object") {
+        if (p.is_in_stock === false || (Array.isArray(p.available_sizes) && p.available_sizes.length === 0)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
 function sanitizeProductObject(product, linkByHandle) {
   const handle = product.handle.trim();
   const next = { ...product };
@@ -113,12 +172,25 @@ function sanitizeProductObject(product, linkByHandle) {
     next.is_in_stock = true;
   }
 
+  const shippingDays = Number(next.shippingDays ?? next.shipping_days ?? 1) || 1;
+  const returnAllowed = next.returnAllowed ?? next.return_allowed ?? true;
+  const returnDays = typeof next.returnDays === "number" ? next.returnDays : (typeof next.return_days === "number" ? next.return_days : 10);
+  const cancellationAllowed = next.cancellationAllowed ?? next.cancellation_allowed ?? true;
+
+  next.shipping_days = shippingDays;
+  next.return_days = returnDays;
+  next.return_allowed = returnAllowed;
+  next.cancellation_allowed = cancellationAllowed;
+  next.shipping_policy_text = formatShippingPolicy(shippingDays);
+  next.return_policy_text = formatReturnPolicy(returnAllowed, returnDays);
+  next.cancellation_policy_text = cancellationAllowed ? "Allowed before dispatch" : "Non-cancellable once placed";
+
   next.product_details = extractProductDetailsTable(next);
 
   return next;
 }
 
-/** Extract tabular product details matching mobile app QuickView (PremiumProductDetailsTable). */
+/** Extract tabular product details matching mobile app tabular attribute specifications. */
 export function extractProductDetailsTable(product) {
   const details = {};
 

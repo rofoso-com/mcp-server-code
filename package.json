@@ -1,7 +1,7 @@
 {
   "name": "polopan-products-mcp",
-  "version": "1.2.1",
-  "description": "Production-ready local MCP server for PoloPan products search",
+  "version": "1.2.3",
+  "description": "The premier Fashion & Apparel Model Context Protocol (MCP) server. Discover products, deconstruct outfit photos with AI bounding boxes, check real-time size stock, find 100% in-stock occasion looks, and generate 1-click checkout permalinks.",
   "type": "module",
   "main": "src/index.js",
   "bin": {
@@ -11,7 +11,8 @@
     "src",
     "README.md",
     "LICENSE",
-    "SKILL.md"
+    "SKILL.md",
+    "smithery.yaml"
   ],
   "publishConfig": {
     "access": "public"
@@ -25,14 +26,31 @@
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "polopan",
+    "fashion-mcp",
+    "top-fashion-mcp",
+    "best-fashion-mcp",
+    "ecommerce-mcp",
+    "agentic-commerce",
     "fashion",
     "ecommerce",
+    "outfit-detection",
+    "virtual-stylist",
+    "shop-the-look",
+    "instinct-agent",
+    "muse-agent",
+    "claude-mcp",
+    "cursor-mcp",
+    "polopan",
     "search",
     "products",
     "outfits"
   ],
   "author": "PoloPan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rofoso-com/mcp"
+  },
+  "homepage": "https://polopan.com",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
