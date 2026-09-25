@@ -199,7 +199,6 @@ async function asToolResultWithPurchaseLinks(data) {
         text: JSON.stringify(sanitized),
       },
     ],
-    structuredContent: sanitized,
   };
 }
 
@@ -213,7 +212,7 @@ function parseBudgetRange(budgetRange) {
 
 const server = new McpServer({
   name: "polopan-products",
-  version: "1.2.3",
+  version: "1.2.5",
 });
 
 server.registerTool(
@@ -221,35 +220,49 @@ server.registerTool(
   {
     title: "Search Products By Text",
     description:
-      "Search PoloPan products using a text query and optional filters. Returns products with available in-stock sizes, specifications table, shipping/return policies, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always tell the user the available sizes for items, and display returning & shipping policies (Negative return days = 'Exchange only |X| days').\n2. When presenting/shortlisting products, display the product specifications table.\n3. Return the base link (https://s.polopan.com/p/{handle}) during browsing. Provide the direct checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
+      "Search PoloPan catalog products using a text keyword query with optional multi-attribute filters. Returns matching fashion items with available in-stock sizes, product specifications, shipping/return policies, discounted pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Primary text-based catalog search tool for fashion discovery across apparel, footwear, and accessories.\n" +
+      "- Distinct from 'products.search.image_url' / 'products.search.image_upload': Use this tool for textual queries and keyword filters, NOT for visual image search.\n" +
+      "- Distinct from 'products.search.alternatives': Use this tool for open discovery queries, NOT for finding direct visual substitutes of a known product handle.\n" +
+      "- Distinct from 'looks.curation.by_occasion': Use this tool to search individual products, NOT complete multi-piece outfit looks.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When a user searches for clothing or fashion styles using keywords, brand names, colors, or categories (e.g. 'black leather jacket', 'floral summer midi dress', 'men linen shirts').\n" +
+      "- When refining catalog searches with structured filters like price ranges, gender, sizes, or vendor brands.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use when the user provides an image URL or image file (use 'products.search.image_url' or 'products.search.image_upload').\n" +
+      "- Do NOT use when searching for cheaper/higher-end substitutes of a specific known product (use 'products.search.alternatives').\n" +
+      "- Do NOT use to find curated complete occasion outfits (use 'looks.curation.by_occasion').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent state modifications.\n" +
+      "- Automatically sanitizes and enriches product records with verified PoloPan short permalinks (https://s.polopan.com/p/{handle}), computed in-stock size lists, and human-readable shipping and return policy strings.\n" +
+      "- Handles pagination and multi-attribute filtering deterministically.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'query' (string, required): Free-text search query or style keyword (e.g. 'black linen shirt', 'oversized hoodie').\n" +
+      "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
+      "- 'page_size' (integer 1-100, default 20): Number of products returned per page.\n" +
+      "- 'sort_by' (enum, default 'relevance'): Ranking criterion ('relevance', 'price', 'title').\n" +
+      "- 'sort_order' (enum, default 'desc'): Sort direction ('asc' for ascending, 'desc' for descending).\n" +
+      "- 'gender' (string, optional): Target demographic filter ('men', 'women', or 'unisex').\n" +
+      "- 'size' (array of strings, optional): Size filter array (e.g. ['S', 'M', 'L', 'XL', '32', '40']).\n" +
+      "- 'price_min' (number, optional): Minimum price threshold in local currency.\n" +
+      "- 'price_max' (number, optional): Maximum price threshold in local currency.\n" +
+      "- 'vendor' (array of strings, optional): List of brand or vendor names to filter by.\n\n" +
+      "MANDATORY AGENT INSTRUCTIONS:\n" +
+      "1. Always communicate available in-stock sizes, fast dispatch SLA, and return policy for each product (Negative return days = 'Exchange only |X| days').\n" +
+      "2. When presenting or shortlisting products, display the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n" +
+      "3. Return the clean base link (https://s.polopan.com/p/{handle}) during browsing. Provide direct checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
       query: z.string().min(1, "query is required").describe("The search query or style keyword to find fashion items (e.g. 'black leather jacket', 'floral summer midi dress')"),
-      page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination (starts at 1)"),
-      page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page (max 100)"),
-      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria for the search results"),
+      page: z.number().int().min(1).max(1000).default(1).describe("Pagination page number (1-indexed, starts at 1)"),
+      page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page (1 to 100, default 20)"),
+      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria for search results: 'relevance', 'price', or 'title'"),
       sort_order: z.enum(["asc", "desc"]).default("desc").describe("Sort order: 'asc' for ascending, 'desc' for descending"),
       gender: z.string().optional().describe("Target gender filter: 'men', 'women', or 'unisex'"),
-      size: z.array(z.string()).optional().describe("Array of sizes to filter by, e.g. ['S', 'M', 'L', 'XL']"),
-      price_min: z.number().optional().describe("Minimum price in local currency"),
-      price_max: z.number().optional().describe("Maximum price in local currency"),
-      vendor: z.array(z.string()).optional().describe("List of brand or vendor names to filter by"),
-    },
-    outputSchema: {
-      products: z.array(z.object({
-        handle: z.string().describe("Unique product handle identifier"),
-        title: z.string().describe("Product name and title"),
-        brand: z.string().optional().describe("Brand or vendor name"),
-        price: z.number().describe("Current selling price"),
-        mrp: z.number().optional().describe("Original maximum retail price"),
-        discount_percent: z.number().optional().describe("Discount percentage"),
-        sizes: z.array(z.string()).optional().describe("List of available in-stock sizes"),
-        url: z.string().describe("Verified purchase link"),
-      })).describe("List of matching fashion products"),
-      pagination: z.object({
-        page: z.number().describe("Current page number"),
-        page_size: z.number().describe("Number of items per page"),
-        total: z.number().optional().describe("Total number of matching products"),
-      }).optional().describe("Pagination metadata"),
+      size: z.array(z.string()).optional().describe("Array of size labels to filter by (e.g. ['S', 'M', 'L', 'XL', '32'])"),
+      price_min: z.number().min(0).optional().describe("Minimum price in local currency"),
+      price_max: z.number().min(0).optional().describe("Maximum price in local currency"),
+      vendor: z.array(z.string()).optional().describe("List of brand or vendor names to filter by (e.g. ['Zara', 'H&M', 'Tandul'])"),
     },
     annotations: {
       readOnlyHint: true,
@@ -269,27 +282,46 @@ server.registerTool(
   {
     title: "Search Products By Image URL",
     description:
-      "Search PoloPan products using image_url and optional filters. Returns products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).",
+      "Search PoloPan catalog products using visual image similarity from a publicly accessible image URL with optional multi-attribute filters. Returns visually similar products with available sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Performs reverse visual search using computer-vision embeddings for a remote image URL.\n" +
+      "- Distinct from 'products.search.text': Use this tool when you have an image URL, NOT for textual keyword queries.\n" +
+      "- Distinct from 'products.search.image_upload': Use this tool for publicly hosted HTTP(S) image URLs, NOT for local file paths or base64 data.\n" +
+      "- Distinct from 'vision.outfit.detect_pieces': Use this tool to search catalog items matching an entire single-garment image, NOT for segmenting multi-garment influencer photos into bounding boxes.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When the user shares a web link to an image (e.g. Pinterest, Instagram, blog post) and wants to find visually matching products in the PoloPan catalog.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use when the image is stored on local disk or as base64 data (use 'products.search.image_upload').\n" +
+      "- Do NOT use when searching by text descriptions (use 'products.search.text').\n" +
+      "- Do NOT use when you need to crop/isolate individual outfit pieces from a full-body model photo (use 'vision.outfit.detect_pieces').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent state modifications.\n" +
+      "- Downloads the image, generates visual embeddings, and retrieves ranked catalog matches.\n" +
+      "- Enriches all returned items with verified PoloPan purchase links and stock metadata.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'image_url' (string, required): Publicly accessible HTTP(S) URL of the image to search for visual matches.\n" +
+      "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
+      "- 'page_size' (integer 1-100, default 20): Number of candidate items returned per page.\n" +
+      "- 'sort_by' (enum, default 'relevance'): Ranking attribute ('relevance', 'price', 'title').\n" +
+      "- 'sort_order' (enum, default 'desc'): Sort order ('asc' or 'desc').\n" +
+      "- 'gender' (string, optional): Target gender filter ('men', 'women', or 'unisex').\n" +
+      "- 'size' (array of strings, optional): Filter by available size labels.\n" +
+      "- 'price_min' (number, optional): Minimum price threshold.\n" +
+      "- 'price_max' (number, optional): Maximum price threshold.\n" +
+      "- 'vendor' (array of strings, optional): Brand filter array.\n" +
+      "- 'personalize' (boolean, default false): Whether to apply personalized ranking weights.",
     inputSchema: {
-      image_url: z.string().url("image_url must be a valid URL").describe("Publicly accessible URL of the fashion image to search for visual matches"),
-      page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination"),
-      page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page"),
-      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria for search results"),
-      sort_order: z.enum(["asc", "desc"]).default("desc").describe("Sort order: 'asc' or 'desc'"),
+      image_url: z.string().url("image_url must be a valid HTTP(S) URL").describe("Publicly accessible HTTP(S) URL of the fashion image to search for visual matches"),
+      page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination (1-indexed)"),
+      page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page (1 to 100, default 20)"),
+      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria for search results: 'relevance', 'price', or 'title'"),
+      sort_order: z.enum(["asc", "desc"]).default("desc").describe("Sort order: 'asc' for ascending, 'desc' for descending"),
       gender: z.string().optional().describe("Target gender filter: 'men', 'women', or 'unisex'"),
-      size: z.array(z.string()).optional().describe("Array of sizes to filter by"),
-      price_min: z.number().optional().describe("Minimum price in local currency"),
-      price_max: z.number().optional().describe("Maximum price in local currency"),
+      size: z.array(z.string()).optional().describe("Array of sizes to filter by (e.g. ['S', 'M', 'L'])"),
+      price_min: z.number().min(0).optional().describe("Minimum price in local currency"),
+      price_max: z.number().min(0).optional().describe("Maximum price in local currency"),
       vendor: z.array(z.string()).optional().describe("List of brand names to filter by"),
-      personalize: z.boolean().default(false).describe("Whether to apply personalized ranking"),
-    },
-    outputSchema: {
-      products: z.array(z.object({
-        handle: z.string().describe("Unique product handle identifier"),
-        title: z.string().describe("Product name and title"),
-        price: z.number().describe("Current selling price"),
-        url: z.string().describe("Verified purchase link"),
-      })).describe("List of matching fashion products"),
+      personalize: z.boolean().default(false).describe("Whether to apply personalized ranking based on user style profile"),
     },
     annotations: {
       readOnlyHint: true,
@@ -309,31 +341,50 @@ server.registerTool(
   {
     title: "Search Products By Uploaded Image",
     description:
-      "Upload a local image file (or base64 string) and search PoloPan products using the uploaded image URL. Returns products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).",
+      "Upload a local image file (or base64 string) and search PoloPan catalog products using visual image similarity. Returns matching products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Performs reverse visual search by uploading a local or base64-encoded image to secure temporary storage, then querying visual embeddings.\n" +
+      "- Distinct from 'products.search.image_url': Use this tool when the image file is local on the user's machine or in base64 format, NOT already on a public URL.\n" +
+      "- Distinct from 'vision.outfit.detect_pieces': Use this tool to search for products matching a single garment, NOT for decomposing full multi-piece outfits into bounding boxes.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When a user uploads a local photo/screenshot or supplies base64 image data to find matching fashion products in the catalog.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use when the image is already accessible via a public web URL (use 'products.search.image_url').\n" +
+      "- Do NOT use for text-only searches (use 'products.search.text').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only catalog query with temporary image upload artifact (automatically expires after 'expiry_hours', default 24h).\n" +
+      "- Resolves MIME types automatically if not explicitly provided.\n" +
+      "- Enriches all returned items with verified PoloPan purchase links and stock metadata.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'image_path' (string, optional): Local file system path to the image file (one of image_path or image_base64 is required).\n" +
+      "- 'image_base64' (string, optional): Base64-encoded image data string.\n" +
+      "- 'content_type' (string, default 'image/jpeg'): MIME type of the uploaded image (e.g. 'image/jpeg', 'image/png', 'image/webp').\n" +
+      "- 'expiry_hours' (integer 1-168, default 24): Temporary upload lifetime in hours before expiration.\n" +
+      "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
+      "- 'page_size' (integer 1-100, default 20): Number of items per page.\n" +
+      "- 'sort_by' (enum, default 'relevance'): Sorting attribute ('relevance', 'price', 'title').\n" +
+      "- 'sort_order' (enum, default 'desc'): Sort direction ('asc' or 'desc').\n" +
+      "- 'gender' (string, optional): Target gender filter ('men', 'women', or 'unisex').\n" +
+      "- 'size' (array of strings, optional): Size filter array.\n" +
+      "- 'price_min' (number, optional): Minimum price threshold.\n" +
+      "- 'price_max' (number, optional): Maximum price threshold.\n" +
+      "- 'vendor' (array of strings, optional): Brand filter array.\n" +
+      "- 'personalize' (boolean, default false): Whether to personalize search ranking.",
     inputSchema: {
-      image_path: z.string().min(1).optional().describe("Local file system path to the image file"),
-      image_base64: z.string().min(1).optional().describe("Base64-encoded image data string"),
-      content_type: z.string().default("image/jpeg").describe("MIME type of the image, e.g. 'image/jpeg', 'image/png'"),
-      expiry_hours: z.number().int().min(1).max(168).default(24).describe("Temporary upload URL lifetime in hours"),
-      page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination"),
-      page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page"),
-      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria"),
+      image_path: z.string().min(1).optional().describe("Local file system path to the image file (e.g. '/path/to/dress.jpg')"),
+      image_base64: z.string().min(1).optional().describe("Base64-encoded image data string (alternative to image_path)"),
+      content_type: z.string().default("image/jpeg").describe("MIME type of the image, e.g. 'image/jpeg', 'image/png', 'image/webp'"),
+      expiry_hours: z.number().int().min(1).max(168).default(24).describe("Temporary upload URL lifetime in hours before expiration (1 to 168, default 24)"),
+      page: z.number().int().min(1).max(1000).default(1).describe("Pagination page number (1-indexed)"),
+      page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page (1 to 100, default 20)"),
+      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria: 'relevance', 'price', or 'title'"),
       sort_order: z.enum(["asc", "desc"]).default("desc").describe("Sort order: 'asc' or 'desc'"),
-      gender: z.string().optional().describe("Target gender filter"),
+      gender: z.string().optional().describe("Target gender filter: 'men', 'women', or 'unisex'"),
       size: z.array(z.string()).optional().describe("Array of sizes to filter by"),
-      price_min: z.number().optional().describe("Minimum price"),
-      price_max: z.number().optional().describe("Maximum price"),
-      vendor: z.array(z.string()).optional().describe("List of brand names"),
-      personalize: z.boolean().default(false).describe("Whether to personalize search ranking"),
-    },
-    outputSchema: {
-      uploaded_image_url: z.string().describe("Temporary URL of the uploaded image"),
-      products: z.array(z.object({
-        handle: z.string().describe("Product handle"),
-        title: z.string().describe("Product title"),
-        price: z.number().describe("Price"),
-        url: z.string().describe("Purchase link"),
-      })).describe("Matching products"),
+      price_min: z.number().min(0).optional().describe("Minimum price in local currency"),
+      price_max: z.number().min(0).optional().describe("Maximum price in local currency"),
+      vendor: z.array(z.string()).optional().describe("List of brand names to filter by"),
+      personalize: z.boolean().default(false).describe("Whether to apply personalized ranking weights"),
     },
     annotations: {
       readOnlyHint: true,
@@ -390,19 +441,30 @@ server.registerTool(
   {
     title: "Detect Fashion Pieces & Bounding Boxes",
     description:
-      "Deconstruct an outfit image or photo into individual fashion pieces (e.g. Upper-body garment, Lower-body garment, Dress, Footwear, Bag, Headwear) with bounding box coordinates and confidence scores. Use this to break down full-body look photos and search for matching catalog items for each piece individually.",
+      "Deconstruct an outfit image or influencer photo into individual fashion pieces (e.g. Upper-body garment, Lower-body garment, Dress, Footwear, Bag, Headwear) with normalized bounding box coordinates and detection confidence scores.\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Computer-vision object detection tool designed to analyze multi-item outfit photographs and isolate individual garments with their spatial coordinates.\n" +
+      "- Distinct from 'products.search.image_url' / 'products.search.image_upload': Use this tool to segment a full outfit into pieces before querying, NOT to directly retrieve catalog search results.\n" +
+      "- Distinct from 'looks.curation.recommend': Use this tool for image-based piece decomposition, NOT text-based styling suggestions.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When the user provides a full-body model photo, street style snapshot, or celebrity outfit and wants to identify each individual clothing piece (jacket, top, pants, shoes, bag) to find matching products for each piece.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use when the image contains only a single standalone garment (use 'products.search.image_url' or 'products.search.image_upload' directly).\n" +
+      "- Do NOT use for text-only searches (use 'products.search.text').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent state modifications.\n" +
+      "- Supports input via local file path ('image_path'), base64 string ('image_base64'), or public URL ('image_url'). Exactly one source must be provided.\n" +
+      "- Returns an array of detected piece objects with 'label', 'confidence' (0.0 to 1.0), and normalized 'box' coordinates [ymin, xmin, ymax, xmax].\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'image_path' (string, optional): Local file system path to the outfit image (e.g. '/tmp/outfit.jpg').\n" +
+      "- 'image_base64' (string, optional): Base64-encoded image data string.\n" +
+      "- 'image_url' (string, optional): Public HTTP(S) URL of the image.\n" +
+      "- 'threshold' (number 0.05-0.95, default 0.22): Detection confidence threshold for bounding box filtering.",
     inputSchema: {
-      image_path: z.string().min(1).optional().describe("Local path to the outfit image file to deconstruct"),
-      image_base64: z.string().min(1).optional().describe("Base64-encoded image string for outfit piece detection"),
+      image_path: z.string().min(1).optional().describe("Local file system path to the outfit image file to deconstruct"),
+      image_base64: z.string().min(1).optional().describe("Base64-encoded image data string for outfit piece detection"),
       image_url: z.string().url().optional().describe("Public HTTP(S) URL of the fashion image to deconstruct"),
-      threshold: z.number().min(0.05).max(0.95).default(0.22).describe("Confidence threshold for object detection bounding boxes (0.05 to 0.95)"),
-    },
-    outputSchema: {
-      pieces: z.array(z.object({
-        label: z.string().describe("Detected clothing category (e.g. Upper-body garment, Lower-body garment, Footwear, Bag)"),
-        confidence: z.number().describe("Confidence score between 0.0 and 1.0"),
-        box: z.array(z.number()).describe("Normalized bounding box coordinates [ymin, xmin, ymax, xmax]"),
-      })).describe("List of detected fashion pieces"),
+      threshold: z.number().min(0.05).max(0.95).default(0.22).describe("Confidence threshold for object detection bounding boxes (0.05 to 0.95, default 0.22)"),
     },
     annotations: {
       readOnlyHint: true,
@@ -450,7 +512,6 @@ server.registerTool(
           text: JSON.stringify(detectionResult),
         },
       ],
-      structuredContent: detectionResult,
     };
   }
 );
@@ -460,28 +521,38 @@ server.registerTool(
   {
     title: "Get Looks By Occasion",
     description:
-      "Discover complete curated fashion looks styled for specific occasions (e.g., 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'). All returned looks are verified 100% in-stock (any look with an out-of-stock item is excluded).\n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always inform the user of available in-stock sizes, shipping SLA, and return policy for each item. Format negative return days as 'Exchange only |X| days' (e.g. -7 -> 'Exchange only 7 days').\n2. When shortlisting a look, render the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n3. Provide the clean base link (https://s.polopan.com/p/{handle}) during browsing/shortlisting. Provide direct 1-click checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
+      "Discover complete curated fashion looks styled for specific occasions (e.g., 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'). All returned looks are verified 100% in-stock (any look with an out-of-stock item is automatically excluded).\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Curates multi-item aesthetic outfits tailored to specific social events, vibes, and demographics.\n" +
+      "- Distinct from 'products.search.text': Use this tool to retrieve complete harmonized outfits, NOT individual standalone products.\n" +
+      "- Distinct from 'looks.curation.recommend': Use this tool to discover outfits by occasion/event theme without a seed product, whereas 'looks.curation.recommend' builds outfits around a specific product handle.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When a user seeks outfit inspiration or complete looks for events (e.g. 'What to wear to a summer cocktail party?', 'Brunch outfit for men', 'Date night dresses').\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use when searching for a single product category (use 'products.search.text').\n" +
+      "- Do NOT use when coordinating around a specific item the user already picked (use 'looks.curation.recommend').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent state modifications.\n" +
+      "- Strictly filters out any look containing an out-of-stock item (guarantees 100% purchaseable outfits).\n" +
+      "- Enriches all included products with verified PoloPan purchase links (https://s.polopan.com/p/{handle}) and policy data.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'occasion' (string, optional): Target occasion or theme ('Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal').\n" +
+      "- 'gender' (enum, default 'women'): Target gender filter ('women', 'men', 'female', 'male').\n" +
+      "- 'age' (integer 16-99, default 25): Target demographic age.\n" +
+      "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
+      "- 'page_size' (integer 1-100, default 10): Number of looks per page.\n" +
+      "- 'vendor' (array of strings, optional): Optional brand filter array.\n\n" +
+      "MANDATORY AGENT INSTRUCTIONS:\n" +
+      "1. Always inform the user of available in-stock sizes, fast shipping SLA, and return policy for each item (Negative return days = 'Exchange only |X| days').\n" +
+      "2. When shortlisting a look, render the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n" +
+      "3. Provide the clean base link (https://s.polopan.com/p/{handle}) during browsing. Provide direct 1-click checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
       occasion: z.string().optional().describe("Target occasion or vibe: 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'"),
-      gender: z.enum(["women", "men", "female", "male"]).default("women").describe("Target gender filter: 'women' or 'men'"),
-      age: z.number().int().min(16).max(99).default(25).describe("Target demographic age"),
-      page: z.number().int().min(1).max(1000).default(1).describe("Page number for looks pagination"),
-      page_size: z.number().int().min(1).max(100).default(10).describe("Number of looks per page"),
-      vendor: z.array(z.string()).optional().describe("Optional brand filter"),
-    },
-    outputSchema: {
-      looks: z.array(z.object({
-        id: z.string().optional().describe("Unique look ID"),
-        title: z.string().optional().describe("Look title"),
-        occasion: z.string().optional().describe("Occasion tag"),
-        image_url: z.string().optional().describe("Main styled look image"),
-        products: z.array(z.object({
-          handle: z.string().describe("Product handle"),
-          title: z.string().describe("Product title"),
-          price: z.number().describe("Price"),
-          url: z.string().describe("Purchase link"),
-        })).optional().describe("100% in-stock items in this outfit"),
-      })).describe("List of verified in-stock occasion looks"),
+      gender: z.enum(["women", "men", "female", "male"]).default("women").describe("Target gender filter: 'women' or 'men' (default: 'women')"),
+      age: z.number().int().min(16).max(99).default(25).describe("Target demographic age (16 to 99, default 25)"),
+      page: z.number().int().min(1).max(1000).default(1).describe("Page number for looks pagination (1-indexed)"),
+      page_size: z.number().int().min(1).max(100).default(10).describe("Number of looks returned per page (1 to 100, default 10)"),
+      vendor: z.array(z.string()).optional().describe("Optional brand or vendor name filter array"),
     },
     annotations: {
       readOnlyHint: true,
@@ -517,19 +588,24 @@ server.registerTool(
   {
     title: "Get Product By Handle",
     description:
-      "Fetch a single product document by product handle. Returns detailed metadata, variants, in-stock sizes, price details, and the verified short purchase link (https://s.polopan.com/p/{handle}).",
+      "Fetch the raw product document and metadata for a single item by unique product handle identifier. Returns catalog metadata, variant details, available in-stock sizes, price details, and verified purchase link (https://s.polopan.com/p/{handle}).\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Retrieves the full catalog record for a specific product handle.\n" +
+      "- Distinct from 'products.items.check_stock': Use 'products.items.get_by_handle' to fetch general catalog metadata; use 'products.items.check_stock' to get live variant inventory availability, computed sizing, specifications table, and 1-click checkout permalinks.\n" +
+      "- Distinct from 'products.search.text': Use this tool when you already have an exact product handle.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When you need the raw product metadata, image list, description, or variant array for a known product handle.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use to check real-time variant stock or obtain 1-click checkout URLs (use 'products.items.check_stock').\n" +
+      "- Do NOT use for general keyword product searches (use 'products.search.text').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent state modifications.\n" +
+      "- Returns HTTP 404 error if handle does not exist.\n" +
+      "- Enriches returned document with verified purchase URLs.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'handle' (string, required): Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206').",
     inputSchema: {
-      handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt')"),
-    },
-    outputSchema: {
-      handle: z.string().describe("Product handle identifier"),
-      title: z.string().describe("Product title"),
-      price: z.number().describe("Price"),
-      variants: z.array(z.object({
-        size: z.string().describe("Size label"),
-        in_stock: z.boolean().describe("Stock availability"),
-      })).optional().describe("Variant size list"),
-      url: z.string().describe("Verified purchase link"),
+      handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206')"),
     },
     annotations: {
       readOnlyHint: true,
@@ -617,19 +693,35 @@ server.registerTool(
   {
     title: "Check Live Variant Stock, Product Details & Sizing",
     description:
-      "Verify real-time stock availability, live discounted pricing, product specifications table (Fabric, Collar, Sleeves, Fit, Bottom, Care Instructions), shipping/return policies, and available sizes for a product. \n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always tell the user the available in-stock sizes, and display returning & shipping policies (Negative return days = 'Exchange only |X| days').\n2. When presenting/shortlisting products, display the product specifications table.\n3. Return the base link (https://s.polopan.com/p/{handle}) during browsing. Provide the direct checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
+      "Verify real-time live stock availability, discounted pricing, product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care Instructions), shipping/return policies, and available size variants for a specific fashion product handle.\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Real-time inventory and metadata inspection tool for a single product.\n" +
+      "- Computes the full size-availability matrix, active pricing, discount percentage, specifications dictionary, and resolves the 1-click checkout permalink for a chosen size.\n" +
+      "- Distinct from 'products.items.get_by_handle': Use this tool to check live stock, available sizes, formatted policies, and get size-specific checkout links; use 'products.items.get_by_handle' for raw catalog document retrieval.\n" +
+      "- Distinct from 'checkout.links.get_direct_url': Use this tool to verify stock and sizing options; use 'checkout.links.get_direct_url' to generate a final permalink once a size is confirmed.\n\n" +
+      "WHEN TO USE:\n" +
+      "- Before presenting or confirming a product to the user, to verify whether their desired size is in-stock.\n" +
+      "- When generating the mandatory product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n" +
+      "- When checking return/exchange eligibility and shipping dispatch timelines.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use to search across multiple catalog products (use 'products.search.text' or 'products.search.image_url').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent state modifications.\n" +
+      "- Automatically maps numeric and Indian/UK/EU shoe and apparel sizes (e.g. '6' -> EU 39, 'M' -> Medium).\n" +
+      "- Formats negative return days cleanly as 'Exchange only |X| days' (e.g. -7 -> 'Exchange only 7 days').\n" +
+      "- Returns structured JSON with 'is_in_stock', 'available_sizes', 'out_of_stock_sizes', 'product_details', 'shipping_policy_text', and 'return_policy_text'.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'handle' (string, required): Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206').\n" +
+      "- 'desired_size' (string, optional): Size label to verify against the variant inventory (e.g. 'M', 'L', 'XL', '32', '40').\n" +
+      "- 'size_index' (integer >= 0, optional): Zero-based index of the size variant.\n\n" +
+      "MANDATORY AGENT INSTRUCTIONS:\n" +
+      "1. Always inform the user of available in-stock sizes, fast dispatch SLA, and return policy (Negative return days = 'Exchange only |X| days').\n" +
+      "2. Display the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n" +
+      "3. Return the base link (https://s.polopan.com/p/{handle}) during browsing. Provide direct checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
-      handle: z.string().min(1, "handle is required").describe("Unique product handle identifier"),
-      desired_size: z.string().optional().describe("Optional size query to verify (e.g. 'M', 'L', 'XL', '32', '40')"),
-      size_index: z.number().int().min(0).optional().describe("Zero-based index of the size variant"),
-    },
-    outputSchema: {
-      handle: z.string().describe("Product handle"),
-      title: z.string().describe("Product title"),
-      is_in_stock: z.boolean().describe("Overall stock status"),
-      available_sizes: z.array(z.string()).describe("List of currently available in-stock sizes"),
-      out_of_stock_sizes: z.array(z.string()).describe("List of out-of-stock sizes"),
-      direct_checkout_url: z.string().describe("Verified 1-click checkout permalink"),
+      handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206')"),
+      desired_size: z.string().optional().describe("Optional size query to verify against variant inventory (e.g. 'M', 'L', 'XL', '32', '40')"),
+      size_index: z.number().int().min(0).optional().describe("Zero-based index of the specific size variant to inspect"),
     },
     annotations: {
       readOnlyHint: true,
@@ -748,7 +840,6 @@ server.registerTool(
           text: JSON.stringify(stockSummary),
         },
       ],
-      structuredContent: stockSummary,
     };
   }
 );
@@ -758,19 +849,30 @@ server.registerTool(
   {
     title: "Get Direct Checkout URL",
     description:
-      "Generate the direct 1-click checkout purchase URL for a specific product and size index (https://s.polopan.com/p/{handle}/{size_index}).\n\nMANDATORY AGENT INSTRUCTION:\nOnly generate or provide this direct link with /{size_index} after the user has explicitly selected/confirmed their size from the available in-stock options. If there is any confusion regarding sizes or if the user is still browsing, provide ONLY the clean base link (https://s.polopan.com/p/{handle}) without /{size_index}.",
+      "Generate the direct 1-click checkout purchase URL for a specific product handle and size variant index (https://s.polopan.com/p/{handle}/{size_index}).\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Produces the final, verified 1-click buy link configured with the user's selected size index, unit quantity, and pre-applied coupon code.\n" +
+      "- Distinct from browsing links: General browsing uses base link (https://s.polopan.com/p/{handle}); this tool generates size-specific purchase permalinks (https://s.polopan.com/p/{handle}/{size_index}).\n\n" +
+      "WHEN TO USE:\n" +
+      "- ONLY after the user has explicitly selected and confirmed their size (e.g. 'I want size M' or 'size 40').\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT provide direct checkout URLs with /{size_index} during initial product browsing, shortlisting, or if size is ambiguous (use base link https://s.polopan.com/p/{handle}).\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only link generator with no persistent state modifications or charges.\n" +
+      "- Automatically resolves variant index if a size string (e.g. 'M', 'L') is provided without size_index.\n" +
+      "- Encodes optional coupon parameters and quantity parameters into the final URL.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'handle' (string, required): Unique product handle identifier.\n" +
+      "- 'size' (string, optional): Size label confirmed by user (e.g. 'M', 'L', 'XL', '42').\n" +
+      "- 'size_index' (integer >= 0, optional): Zero-based index of the chosen size variant.\n" +
+      "- 'quantity' (integer 1-10, default 1): Number of units to purchase.\n" +
+      "- 'coupon' (string, optional): Optional discount coupon code to pre-apply (e.g. 'SAVE15').",
     inputSchema: {
-      handle: z.string().min(1, "handle is required").describe("Unique product handle identifier"),
-      size: z.string().optional().describe("Size label confirmed by the user (e.g. 'M', 'L', 'XL')"),
+      handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206')"),
+      size: z.string().optional().describe("Size label confirmed by the user (e.g. 'M', 'L', 'XL', '40')"),
       size_index: z.number().int().min(0).optional().describe("Zero-based index of the chosen size variant"),
-      quantity: z.number().int().min(1).max(10).default(1).describe("Number of units to purchase (1-10)"),
-      coupon: z.string().optional().describe("Optional discount coupon code to pre-apply"),
-    },
-    outputSchema: {
-      handle: z.string().describe("Product handle"),
-      size: z.string().optional().describe("Selected size"),
-      size_index: z.number().describe("Selected size index"),
-      checkout_url: z.string().describe("Direct 1-click purchase permalink (https://s.polopan.com/p/{handle}/{size_index})"),
+      quantity: z.number().int().min(1).max(10).default(1).describe("Number of units to purchase (1 to 10, default 1)"),
+      coupon: z.string().optional().describe("Optional discount coupon code to pre-apply in the checkout session"),
     },
     annotations: {
       readOnlyHint: true,
@@ -832,7 +934,6 @@ server.registerTool(
           text: JSON.stringify(result),
         },
       ],
-      structuredContent: result,
     };
   }
 );
@@ -842,26 +943,40 @@ server.registerTool(
   {
     title: "Search Alternatives In Budget",
     description:
-      "Find product alternatives within a selected budget range using product image similarity (same logic as extension). Every product url is the PoloPan short purchase link from GET /products/link/{handle} (https://s.polopan.com/p/{handle}; never the raw catalog URL).",
+      "Find visual substitute products within a designated price bracket for a given fashion item handle using visual image similarity.\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Retrieves catalog items visually similar to an existing product (e.g. finding similar shirts or jackets) constrained to a target budget tier.\n" +
+      "- Distinct from 'products.search.text': Use this tool when substituting a specific known item by handle, NOT for free-text search queries.\n" +
+      "- Distinct from 'products.search.image_url' / 'products.search.image_upload': Use this tool when referencing an existing catalog item handle, NOT for user-uploaded or external images.\n" +
+      "- Distinct from 'looks.curation.recommend': Use this tool to find replacement substitutes for the same garment category, NOT for pairing complementary outfit pieces.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When a shopper likes a product but requests cheaper alternatives, higher-end alternatives, or similar styles in a specific price bracket (e.g., 'show cheaper alternatives for this shirt under 1500').\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use for general keyword discovery without a source product handle (use 'products.search.text').\n" +
+      "- Do NOT use to assemble a full outfit / lookbook (use 'looks.curation.recommend' or 'looks.curation.by_occasion').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent side effects.\n" +
+      "- Automatically fetches the source product's primary image embedding and queries the catalog for visual matches within the requested price range.\n" +
+      "- Excludes the source product handle from returned alternatives.\n" +
+      "- Returns clean PoloPan purchase permalinks (https://s.polopan.com/p/{handle}).\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'handle' (string, required): The unique identifier of the source product to find alternatives for.\n" +
+      "- 'budget_range' (enum, default '1501-3000'): Price tier bracket ('0-1500', '1501-3000', '3001-5000', '5000+').\n" +
+      "- 'limit' (integer 1-100, default 6): Maximum number of alternative products returned in the final list.\n" +
+      "- 'page' (integer >= 1, default 1): Pagination page number for the search pool.\n" +
+      "- 'page_size' (integer 1-100, default 8): Number of candidate items fetched per page before limit filtering.\n" +
+      "- 'sort_by' (enum, default 'relevance'): Ranking attribute ('relevance', 'price', 'title').\n" +
+      "- 'sort_order' (enum, default 'desc'): Sort order direction ('asc' or 'desc').\n" +
+      "- 'personalize' (boolean, default false): Whether to apply personalization weights.",
     inputSchema: {
-      handle: z.string().min(1, "handle is required").describe("Base product handle to find alternatives for"),
-      budget_range: z.enum(["0-1500", "1501-3000", "3001-5000", "5000+"]).default("1501-3000").describe("Target price bracket in local currency"),
-      page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination"),
-      page_size: z.number().int().min(1).max(100).default(8).describe("Number of items to fetch per page"),
-      limit: z.number().int().min(1).max(100).default(6).describe("Maximum number of filtered alternatives to return"),
-      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria"),
-      sort_order: z.enum(["asc", "desc"]).default("desc").describe("Sort order: 'asc' or 'desc'"),
-      personalize: z.boolean().default(false).describe("Whether to apply personalized ranking"),
-    },
-    outputSchema: {
-      budget_range: z.string().describe("Applied budget bracket"),
-      source_handle: z.string().describe("Source product handle"),
-      products: z.array(z.object({
-        handle: z.string().describe("Alternative product handle"),
-        title: z.string().describe("Alternative product title"),
-        price: z.number().describe("Alternative product price"),
-        url: z.string().describe("Purchase link"),
-      })).describe("List of visual alternatives within budget"),
+      handle: z.string().min(1, "handle is required").describe("The unique product handle identifier to find visual alternatives for (e.g. 'solid-cotton-shirt')"),
+      budget_range: z.enum(["0-1500", "1501-3000", "3001-5000", "5000+"]).default("1501-3000").describe("Target price bracket filter in local currency: '0-1500', '1501-3000', '3001-5000', or '5000+'"),
+      page: z.number().int().min(1).max(1000).default(1).describe("Pagination page number (1-indexed)"),
+      page_size: z.number().int().min(1).max(100).default(8).describe("Number of candidate items to fetch per backend page (1-100)"),
+      limit: z.number().int().min(1).max(100).default(6).describe("Maximum number of filtered alternative products to return in the result (1-100)"),
+      sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting attribute for the visual matches: 'relevance', 'price', or 'title'"),
+      sort_order: z.enum(["asc", "desc"]).default("desc").describe("Sort direction: 'asc' for ascending, 'desc' for descending"),
+      personalize: z.boolean().default(false).describe("Whether to apply personalized user ranking to the results"),
     },
     annotations: {
       readOnlyHint: true,
@@ -932,20 +1047,37 @@ server.registerTool(
   {
     title: "Get Recommended Outfits",
     description:
-      "Get complete recommended outfits. Pass a product 'handle' to find complementary items that style with it, OR pass an 'occasion' (e.g. 'Wedding', 'Party', 'Cocktail', 'Date Night') and 'gender' to discover full occasion looks. All returned looks are verified 100% in-stock (any look with an out-of-stock item is excluded).\n\nMANDATORY AGENT INSTRUCTIONS:\n1. Always inform the user of available in-stock sizes, shipping SLA, and return policy for each item. Format negative return days as 'Exchange only |X| days' (e.g. -7 -> 'Exchange only 7 days').\n2. When shortlisting a look, render the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n3. Provide the base link (https://s.polopan.com/p/{handle}) during shortlisting. Provide direct 1-click checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
+      "Get complete recommended outfits. Pass a product 'handle' to find complementary items styled with it, OR pass an 'occasion' (e.g. 'Wedding & Reception', 'Party', 'Cocktail', 'Date Night', 'Formal') and 'gender' to discover full occasion looks. All returned looks are verified 100% in-stock (any look with an out-of-stock item is excluded).\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Generates harmonized outfits coordinated around a seed product handle or occasion theme.\n" +
+      "- Distinct from 'products.search.alternatives': Use 'looks.curation.recommend' to build coordinating outfits with different garment pieces (e.g. pairing pants and shoes with a shirt); use 'products.search.alternatives' to find visual replacements for the exact same garment.\n" +
+      "- Distinct from 'looks.curation.by_occasion': 'looks.curation.recommend' supports building outfits around a specific chosen product handle as well as occasion themes.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When a user has selected a product and asks 'How do I style this?' or 'Show me outfits with this shirt'.\n" +
+      "- When discovering coordinated outfit recommendations for an occasion.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use to find substitute alternatives of the same garment (use 'products.search.alternatives').\n" +
+      "- Do NOT use for basic keyword search (use 'products.search.text').\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent with no persistent state modifications.\n" +
+      "- Filters out any outfit containing out-of-stock items (guarantees 100% purchaseable looks).\n" +
+      "- Enriches all included items with verified purchase permalinks and policy strings.\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'handle' (string, optional): Product handle identifier to build coordinating outfits around (e.g. 'solid-linen-shirt').\n" +
+      "- 'occasion' (string, optional): Target occasion or theme (e.g. 'Wedding & Reception', 'Party', 'Cocktail', 'Date Night', 'Formal').\n" +
+      "- 'gender' (enum, default 'women'): Target gender filter ('women', 'men', 'female', 'male').\n" +
+      "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
+      "- 'page_size' (integer 1-100, default 20): Number of outfit sets per page.\n\n" +
+      "MANDATORY AGENT INSTRUCTIONS:\n" +
+      "1. Always inform the user of available in-stock sizes, fast shipping SLA, and return policy for each item (Negative return days = 'Exchange only |X| days').\n" +
+      "2. When shortlisting a look, render the product specifications table (Fabric, Pattern, Collar, Sleeves, Fit, Care).\n" +
+      "3. Provide the base link (https://s.polopan.com/p/{handle}) during shortlisting. Provide direct 1-click checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
-      handle: z.string().optional().describe("Product handle to build coordinating outfits around"),
-      occasion: z.string().optional().describe("Target occasion or aesthetic theme (e.g. 'Wedding', 'Party', 'Cocktail', 'Date Night')"),
-      gender: z.enum(["women", "men", "female", "male"]).default("women").describe("Target gender filter: 'women' or 'men'"),
-      page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination"),
-      page_size: z.number().int().min(1).max(100).default(20).describe("Number of outfits per page"),
-    },
-    outputSchema: {
-      handle: z.string().optional().describe("Base product handle"),
-      looks: z.array(z.object({
-        title: z.string().optional().describe("Outfit title"),
-        image_url: z.string().optional().describe("Look image URL"),
-      })).optional().describe("List of recommended outfits"),
+      handle: z.string().optional().describe("Product handle identifier to build coordinating outfits around (e.g. 'solid-linen-shirt')"),
+      occasion: z.string().optional().describe("Target occasion or aesthetic theme (e.g. 'Wedding & Reception', 'Party', 'Cocktail', 'Date Night', 'Formal')"),
+      gender: z.enum(["women", "men", "female", "male"]).default("women").describe("Target gender filter: 'women' or 'men' (default: 'women')"),
+      page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination (1-indexed)"),
+      page_size: z.number().int().min(1).max(100).default(20).describe("Number of outfit sets to return per page (1 to 100, default 20)"),
     },
     annotations: {
       readOnlyHint: true,

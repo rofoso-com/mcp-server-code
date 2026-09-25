@@ -27,24 +27,24 @@ async function main() {
   console.log("Available tools:", [...toolNames].join(", "));
 
   const calls = [
-    { name: "search_products_text", arguments: { query: "black dress", page: 1, page_size: 3 } },
+    { name: "products.search.text", arguments: { query: "black dress", page: 1, page_size: 3 } },
     {
-      name: "search_products_image",
+      name: "products.search.image_url",
       arguments: {
         image_url: "https://i.pinimg.com/280x280_RS/42/8c/95/428c9583212aeaa13256b4d7e619ea99.jpg",
         page: 1,
         page_size: 3,
       },
     },
-    { name: "get_product_by_handle", arguments: { handle: "zara-tailored-waistcoat-with-linen-5566-064-v2024" } },
+    { name: "products.items.get_by_handle", arguments: { handle: "zara-tailored-waistcoat-with-linen-5566-064-v2024" } },
     {
-      name: "search_alternatives_in_budget",
+      name: "products.search.alternatives",
       arguments: {
         handle: "zara-tailored-waistcoat-with-linen-5566-064-v2024",
         budget_range: "1501-3000",
       },
     },
-    { name: "get_recommended_outfits", arguments: { handle: "zara-tailored-waistcoat-with-linen-5566-064-v2024", page: 1, page_size: 5 } },
+    { name: "looks.curation.recommend", arguments: { handle: "zara-tailored-waistcoat-with-linen-5566-064-v2024", page: 1, page_size: 5 } },
   ];
 
   for (const test of calls) {

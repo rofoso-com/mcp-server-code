@@ -52,16 +52,16 @@ async function runE2ETests() {
   console.log(`✓ Tools: ${toolNames.join(", ")}`);
 
   const expectedTools = [
-    "search_products_text",
-    "search_products_image",
-    "search_products_image_upload",
-    "detect_fashion_pieces",
-    "get_looks_by_occasion",
-    "get_product_by_handle",
-    "check_variant_availability",
-    "get_direct_checkout_url",
-    "search_alternatives_in_budget",
-    "get_recommended_outfits",
+    "products.search.text",
+    "products.search.image_url",
+    "products.search.image_upload",
+    "vision.outfit.detect_pieces",
+    "looks.curation.by_occasion",
+    "products.items.get_by_handle",
+    "products.items.check_stock",
+    "checkout.links.get_direct_url",
+    "products.search.alternatives",
+    "looks.curation.recommend",
   ];
 
   for (const exp of expectedTools) {
@@ -75,14 +75,18 @@ async function runE2ETests() {
       { method: "tools/call", params: { name, arguments: args } },
       CallToolResultSchema
     );
+    if (res.isError) {
+      console.error(`Tool ${name} failed:`, JSON.stringify(res, null, 2));
+      throw new Error(`Tool ${name} failed: ${JSON.stringify(res)}`);
+    }
     const textObj = res.content?.find((c) => c.type === "text");
     assert(textObj && textObj.text, `Tool ${name} returned empty content`);
     return JSON.parse(textObj.text);
   }
 
   // 2. Text Search & Available Sizes Enrichment Test
-  console.log("\n[TEST 2] Testing 'search_products_text' & size/url/policy enrichment...");
-  const searchRes = await callTool("search_products_text", {
+  console.log("\n[TEST 2] Testing 'products.search.text' & size/url/policy enrichment...");
+  const searchRes = await callTool("products.search.text", {
     query: "black dress",
     page: 1,
     page_size: 3,
@@ -104,8 +108,8 @@ async function runE2ETests() {
   const sampleHandle = testProduct.handle;
 
   // 3. Product Details By Handle Test
-  console.log(`\n[TEST 3] Testing 'get_product_by_handle' for '${sampleHandle}'...`);
-  const handleRes = await callTool("get_product_by_handle", { handle: sampleHandle });
+  console.log(`\n[TEST 3] Testing 'products.items.get_by_handle' for '${sampleHandle}'...`);
+  const handleRes = await callTool("products.items.get_by_handle", { handle: sampleHandle });
   assert.equal(handleRes.handle, sampleHandle, "Handle in response must match");
   assert(handleRes.url && handleRes.url.startsWith("https://s.polopan.com/p/"), "Must have verified short URL");
   console.log(`✓ Product: ${handleRes.title}`);
@@ -114,9 +118,9 @@ async function runE2ETests() {
   console.log("✅ [TEST 3 PASSED] Product handle retrieval verified.");
 
   // 4. Live Stock & Variant Availability Check Test
-  console.log(`\n[TEST 4] Testing 'check_variant_availability' for '${sampleHandle}'...`);
+  console.log(`\n[TEST 4] Testing 'products.items.check_stock' for '${sampleHandle}'...`);
   const firstAvailableSize = handleRes.available_sizes?.[0] || "M";
-  const stockRes = await callTool("check_variant_availability", {
+  const stockRes = await callTool("products.items.check_stock", {
     handle: sampleHandle,
     desired_size: firstAvailableSize,
   });
@@ -134,8 +138,8 @@ async function runE2ETests() {
   console.log("✅ [TEST 4 PASSED] Real-time stock, pricing, details table, and policy strings verified.");
 
   // 5. Direct Checkout URL Generator (size selection -> /{size_index})
-  console.log(`\n[TEST 5] Testing 'get_direct_checkout_url' for 1-click checkout...`);
-  const checkoutRes = await callTool("get_direct_checkout_url", {
+  console.log(`\n[TEST 5] Testing 'checkout.links.get_direct_url' for 1-click checkout...`);
+  const checkoutRes = await callTool("checkout.links.get_direct_url", {
     handle: sampleHandle,
     size: "L",
     quantity: 1,
@@ -148,8 +152,8 @@ async function runE2ETests() {
   console.log("✅ [TEST 5 PASSED] Direct checkout permalink with /{size_index} generation verified.");
 
   // 6. Occasion Looks Discovery Test (Strict 100% In-Stock Guarantee)
-  console.log("\n[TEST 6] Testing 'get_looks_by_occasion' ('Wedding & Reception') & in-stock filtering...");
-  const occasionRes = await callTool("get_looks_by_occasion", {
+  console.log("\n[TEST 6] Testing 'looks.curation.by_occasion' ('Wedding & Reception') & in-stock filtering...");
+  const occasionRes = await callTool("looks.curation.by_occasion", {
     occasion: "Wedding & Reception",
     gender: "women",
     page: 1,
@@ -173,9 +177,9 @@ async function runE2ETests() {
   console.log(`✓ Verified all ${occasionRes.looks.length} returned looks are 100% in-stock!`);
 
   // 7. Multi-Modal Fashion Detection & Bounding Boxes Test
-  console.log("\n[TEST 7] Testing 'detect_fashion_pieces' via image URL...");
+  console.log("\n[TEST 7] Testing 'vision.outfit.detect_pieces' via image URL...");
   const sampleImageUrl = "https://storage.googleapis.com/pp-products/products/images/10000008328825307297/top.webp";
-  const detectRes = await callTool("detect_fashion_pieces", {
+  const detectRes = await callTool("vision.outfit.detect_pieces", {
     image_url: sampleImageUrl,
     threshold: 0.2,
   });
@@ -188,8 +192,8 @@ async function runE2ETests() {
   console.log("✅ [TEST 7 PASSED] Image deconstruction and fashion bounding boxes verified.");
 
   // 8. Recommended Outfits Test (by occasion fallback)
-  console.log("\n[TEST 8] Testing 'get_recommended_outfits' with occasion argument...");
-  const outfitsRes = await callTool("get_recommended_outfits", {
+  console.log("\n[TEST 8] Testing 'looks.curation.recommend' with occasion argument...");
+  const outfitsRes = await callTool("looks.curation.recommend", {
     occasion: "Party",
     gender: "women",
     page: 1,
@@ -200,8 +204,8 @@ async function runE2ETests() {
   console.log("✅ [TEST 8 PASSED] Recommended outfits works with occasion input.");
 
   // 9. Budget Alternatives Test
-  console.log(`\n[TEST 9] Testing 'search_alternatives_in_budget' for '${sampleHandle}'...`);
-  const altRes = await callTool("search_alternatives_in_budget", {
+  console.log(`\n[TEST 9] Testing 'products.search.alternatives' for '${sampleHandle}'...`);
+  const altRes = await callTool("products.search.alternatives", {
     handle: sampleHandle,
     budget_range: "0-1500",
     limit: 3,
