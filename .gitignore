@@ -4,4 +4,7 @@ node_modules/
 npm-debug.log*
 .env
 .env.*
+DEPLOYMENT.md
+SUBMISSIONS.md
 package-lock.json
+smithery.yaml

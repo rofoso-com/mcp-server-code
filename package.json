@@ -11,8 +11,7 @@
     "src",
     "README.md",
     "LICENSE",
-    "SKILL.md",
-    "smithery.yaml"
+    "SKILL.md"
   ],
   "publishConfig": {
     "access": "public"
