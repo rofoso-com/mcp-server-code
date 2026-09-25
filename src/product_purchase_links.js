@@ -113,7 +113,49 @@ function sanitizeProductObject(product, linkByHandle) {
     next.is_in_stock = true;
   }
 
+  next.product_details = extractProductDetailsTable(next);
+
   return next;
+}
+
+/** Extract tabular product details matching mobile app QuickView (PremiumProductDetailsTable). */
+export function extractProductDetailsTable(product) {
+  const details = {};
+
+  const contentGroups = product?.style?.productContentGroupEntries;
+  if (Array.isArray(contentGroups)) {
+    for (const group of contentGroups) {
+      if (!group || typeof group !== "object") continue;
+      const groupType = String(group.type || "").toUpperCase();
+      if (groupType === "TABULAR" && Array.isArray(group.attributes)) {
+        for (const attr of group.attributes) {
+          if (attr && typeof attr === "object") {
+            const name = (attr.attributeName || "").trim();
+            const val = (attr.value || "").trim();
+            if (name && val) {
+              details[name] = val;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (product?.visual_attributes && typeof product.visual_attributes === "object") {
+    const va = product.visual_attributes;
+    if (va.garment_type?.category && !details["Category"] && !details["Product Type"]) {
+      details["Category"] = va.garment_type.category;
+    }
+    if (va.gender?.value && !details["Gender"]) {
+      details["Gender"] = va.gender.value;
+    }
+  }
+
+  if (Object.keys(details).length === 0 && product?.product_type) {
+    details["Product Type"] = product.product_type;
+  }
+
+  return details;
 }
 
 /** Deep-copy payload tree; replace product.url with resolved purchase links only. */

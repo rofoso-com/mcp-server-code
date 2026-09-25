@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   applyPurchaseLinksToMcpPayload,
   buildPurchaseLinkResolverOptions,
+  extractProductDetailsTable,
 } from "./product_purchase_links.js";
 
 const config = {
@@ -507,9 +508,9 @@ function findVariantMatch(variants, sizeQuery, sizeIndex) {
 server.registerTool(
   "check_variant_availability",
   {
-    title: "Check Live Variant Stock & Size Availability",
+    title: "Check Live Variant Stock, Product Details & Sizing",
     description:
-      "Verify real-time stock availability, live discounted pricing, available sizes, shipping time, and return policy for a product. Returns size options with direct checkout URLs (https://s.polopan.com/p/{handle}/{size_index}).",
+      "Verify real-time stock availability, live discounted pricing, product specifications table (Fabric, Collar, Sleeves, Fit, Bottom, Care Instructions), and available sizes for a product. \n\nINSTRUCTIONS FOR AI ASSISTANTS:\n1. Always display the 'product_details' table matching the mobile app QuickView.\n2. Present the in-stock 'available_sizes'.\n3. ASK the user to pick/confirm their size from the available options BEFORE providing the final direct 1-click checkout URL (https://s.polopan.com/p/{handle}/{size_index}).",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       desired_size: z.string().optional(),
@@ -581,10 +582,13 @@ server.registerTool(
       ? Math.round(((compareAtPrice - minPrice) / compareAtPrice) * 100)
       : 0;
 
+    const productDetails = extractProductDetailsTable(product);
+
     const stockSummary = {
       handle: handle.trim(),
       title: product?.title || "",
       vendor: product?.vendor || "",
+      product_details: productDetails,
       is_in_stock: availableSizes.length > 0,
       sizes,
       available_sizes: availableSizes,
@@ -625,7 +629,7 @@ server.registerTool(
   {
     title: "Get Direct Checkout URL",
     description:
-      "Generate the direct 1-click checkout purchase URL for a specific product and size index (https://s.polopan.com/p/{handle}/{size_index}). Automatically matches size string or accepts size_index directly.",
+      "Generate the direct 1-click checkout purchase URL for a specific product and size index (https://s.polopan.com/p/{handle}/{size_index}). INSTRUCTION: Only generate or provide this link after the user has explicitly selected/confirmed their size from the available in-stock options.",
     inputSchema: {
       handle: z.string().min(1, "handle is required"),
       size: z.string().optional(),
