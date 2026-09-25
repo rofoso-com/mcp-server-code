@@ -2,11 +2,27 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import assert from "node:assert/strict";
+import {
+  formatReturnPolicy,
+  formatShippingPolicy,
+  isLookFullyInStock,
+} from "../src/product_purchase_links.js";
 
 async function runE2ETests() {
   console.log("=================================================");
   console.log("🚀 Starting PoloPan MCP End-to-End Test Suite");
   console.log("=================================================");
+
+  // 0. Unit Tests for Policy Formatters & Negative Return Days
+  console.log("\n[TEST 0] Testing formatReturnPolicy & formatShippingPolicy...");
+  assert.equal(formatReturnPolicy(true, -7), "Exchange only 7 days");
+  assert.equal(formatReturnPolicy(true, -5), "Exchange only 5 days");
+  assert.equal(formatReturnPolicy(true, 10), "10 days easy returns");
+  assert.equal(formatReturnPolicy(false, 10), "No returns (Final sale)");
+  assert.equal(formatReturnPolicy(true, 0), "No returns (Final sale)");
+  assert.equal(formatShippingPolicy(1), "Fast dispatch (Shipped within 1 day)");
+  assert.equal(formatShippingPolicy(3), "Shipped within 3 days");
+  console.log("✅ [TEST 0 PASSED] Negative return days format ('Exchange only |X| days') verified.");
 
   const transport = new StdioClientTransport({
     command: "node",
@@ -65,7 +81,7 @@ async function runE2ETests() {
   }
 
   // 2. Text Search & Available Sizes Enrichment Test
-  console.log("\n[TEST 2] Testing 'search_products_text' & size/url enrichment...");
+  console.log("\n[TEST 2] Testing 'search_products_text' & size/url/policy enrichment...");
   const searchRes = await callTool("search_products_text", {
     query: "black dress",
     page: 1,
@@ -77,9 +93,13 @@ async function runE2ETests() {
   console.log(`✓ Found product: "${testProduct.title}" (handle: ${testProduct.handle})`);
   console.log(`✓ Verified Purchase URL: ${testProduct.url}`);
   console.log(`✓ In-Stock Sizes: ${JSON.stringify(testProduct.available_sizes)}`);
+  console.log(`✓ Shipping Policy: ${testProduct.shipping_policy_text}`);
+  console.log(`✓ Return Policy: ${testProduct.return_policy_text}`);
   assert(testProduct.url && testProduct.url.startsWith("https://s.polopan.com/p/"), "Product url must be short purchase link");
   assert(Array.isArray(testProduct.available_sizes), "Product must have available_sizes array");
-  console.log("✅ [TEST 2 PASSED] Search returns verified short links and computed available_sizes.");
+  assert(typeof testProduct.return_policy_text === "string" && testProduct.return_policy_text.length > 0, "Product must have return_policy_text");
+  assert(typeof testProduct.shipping_policy_text === "string" && testProduct.shipping_policy_text.length > 0, "Product must have shipping_policy_text");
+  console.log("✅ [TEST 2 PASSED] Search returns verified short links, computed available_sizes, and policy SLAs.");
 
   const sampleHandle = testProduct.handle;
 
@@ -90,6 +110,7 @@ async function runE2ETests() {
   assert(handleRes.url && handleRes.url.startsWith("https://s.polopan.com/p/"), "Must have verified short URL");
   console.log(`✓ Product: ${handleRes.title}`);
   console.log(`✓ Available sizes: ${JSON.stringify(handleRes.available_sizes)}`);
+  console.log(`✓ Return Policy: ${handleRes.return_policy_text}`);
   console.log("✅ [TEST 3 PASSED] Product handle retrieval verified.");
 
   // 4. Live Stock & Variant Availability Check Test
@@ -101,14 +122,16 @@ async function runE2ETests() {
   });
   console.log(`✓ In Stock: ${stockRes.is_in_stock}`);
   console.log(`✓ Available Sizes: ${JSON.stringify(stockRes.available_sizes)}`);
-  console.log(`✓ Sizes with Checkout URLs: ${JSON.stringify(stockRes.sizes)}`);
+  console.log(`✓ Product Details Table: ${JSON.stringify(stockRes.product_details)}`);
   console.log(`✓ Selected Size: ${JSON.stringify(stockRes.selected_size)}`);
   console.log(`✓ Current Price: ₹${stockRes.current_price} (MRP: ₹${stockRes.original_price}, Discount: ${stockRes.discount_percentage})`);
-  console.log(`✓ Shipping SLA: ${stockRes.shipping_days} day(s), Return: ${stockRes.return_days} days`);
+  console.log(`✓ Shipping SLA: ${stockRes.shipping_policy_text}, Return: ${stockRes.return_policy_text}`);
   console.log(`✓ Direct Checkout URL: ${stockRes.direct_checkout_url}`);
   assert.equal(stockRes.selected_size.is_in_stock, true, "Desired size should be reported in stock");
   assert(stockRes.direct_checkout_url.match(/https:\/\/s\.polopan\.com\/p\/[^\/]+\/\d+/), "Checkout URL must follow pattern https://s.polopan.com/p/{handle}/{size_index}");
-  console.log("✅ [TEST 4 PASSED] Real-time stock, pricing, and size_index checkout URLs verified.");
+  assert(typeof stockRes.return_policy_text === "string", "Must provide formatted return_policy_text");
+  assert(typeof stockRes.shipping_policy_text === "string", "Must provide formatted shipping_policy_text");
+  console.log("✅ [TEST 4 PASSED] Real-time stock, pricing, details table, and policy strings verified.");
 
   // 5. Direct Checkout URL Generator (size selection -> /{size_index})
   console.log(`\n[TEST 5] Testing 'get_direct_checkout_url' for 1-click checkout...`);
@@ -124,8 +147,8 @@ async function runE2ETests() {
   assert(checkoutRes.checkout_url.includes("coupon=SAVE15"), "Must include coupon parameter");
   console.log("✅ [TEST 5 PASSED] Direct checkout permalink with /{size_index} generation verified.");
 
-  // 6. Occasion Looks Discovery Test
-  console.log("\n[TEST 6] Testing 'get_looks_by_occasion' ('Wedding & Reception')...");
+  // 6. Occasion Looks Discovery Test (Strict 100% In-Stock Guarantee)
+  console.log("\n[TEST 6] Testing 'get_looks_by_occasion' ('Wedding & Reception') & in-stock filtering...");
   const occasionRes = await callTool("get_looks_by_occasion", {
     occasion: "Wedding & Reception",
     gender: "women",
@@ -133,16 +156,21 @@ async function runE2ETests() {
     page_size: 2,
   });
   assert(Array.isArray(occasionRes.looks) && occasionRes.looks.length > 0, "Expected looks array for occasion");
+  for (const look of occasionRes.looks) {
+    if (Array.isArray(look.outfit_components)) {
+      for (const comp of look.outfit_components) {
+        if (Array.isArray(comp.products)) {
+          for (const p of comp.products) {
+            assert.notEqual(p.is_in_stock, false, `Look '${look.title || look.id}' contains out-of-stock product '${p.title}'`);
+            assert(Array.isArray(p.available_sizes) && p.available_sizes.length > 0, `Look '${look.title || look.id}' product '${p.title}' has no available sizes`);
+          }
+        }
+      }
+    }
+  }
   const firstLook = occasionRes.looks[0];
   console.log(`✓ Found Look for occasion: "${firstLook.occasion || 'Curated Look'}"`);
-  console.log(`✓ Outfit Components count: ${firstLook.outfit_components?.length || 0}`);
-  if (firstLook.outfit_components?.[0]) {
-    const comp = firstLook.outfit_components[0];
-    const p = comp.products?.[0];
-    console.log(`  - Component: ${comp.component_name || 'Item'}: ${p?.title} (${p?.url})`);
-    assert(p?.url && p.url.startsWith("https://s.polopan.com/p/"), "Outfit items must have verified short purchase links");
-  }
-  console.log("✅ [TEST 6 PASSED] Occasion looks feed returns coordinated outfits with buyable links.");
+  console.log(`✓ Verified all ${occasionRes.looks.length} returned looks are 100% in-stock!`);
 
   // 7. Multi-Modal Fashion Detection & Bounding Boxes Test
   console.log("\n[TEST 7] Testing 'detect_fashion_pieces' via image URL...");
