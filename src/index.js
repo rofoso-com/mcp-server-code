@@ -844,6 +844,52 @@ server.registerTool(
   }
 );
 
+server.registerPrompt(
+  "curate_occasion_look",
+  {
+    title: "Curate Occasion Look",
+    description: "Prompt template to curate a 100% in-stock outfit for any occasion (Wedding, Cocktail, Party, Date Night, Casual).",
+    inputSchema: {
+      occasion: z.string().describe("Target occasion or vibe, e.g. Wedding Guest, Cocktail Party, Date Night, Summer Brunch"),
+      budget: z.string().optional().describe("Optional budget filter, e.g. under 3000, 0-1500, 1501-3000, 3001-5000"),
+    },
+  },
+  (args) => {
+    return {
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `Please curate a complete outfit for occasion "${args.occasion}"${args.budget ? ` with budget ${args.budget}` : ""}. Use the PoloPan Fashion MCP tools (like get_looks_by_occasion and check_variant_availability) to ensure all pieces are 100% in stock, specify available sizes, and return direct checkout permalinks.`,
+          },
+        },
+      ],
+    };
+  }
+);
+
+server.registerResource(
+  "fashion_guide",
+  "fashion://guide",
+  {
+    title: "PoloPan Fashion Guide & Capability Reference",
+    description: "Overview of fashion styling capabilities, supported occasions, and shopping permalink structures",
+    mimeType: "text/markdown",
+  },
+  () => {
+    return {
+      contents: [
+        {
+          uri: "fashion://guide",
+          mimeType: "text/markdown",
+          text: "# PoloPan Fashion & Styling Capability Guide\n\nPoloPan provides real-time fashion intelligence, computer-vision outfit deconstruction, 100% in-stock occasion lookbooks, and 1-click checkout permalinks.\n\n## Core Tool Capabilities:\n- `detect_fashion_pieces`: Bounding-box segmentation of influencer photos\n- `get_looks_by_occasion`: 100% in-stock outfits by vibe/event\n- `check_variant_availability`: Live size matrix and garment specs\n- `get_direct_checkout_url`: Instant checkout permalinks",
+        },
+      ],
+    };
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
