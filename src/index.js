@@ -217,7 +217,7 @@ const server = new McpServer({
 });
 
 server.registerTool(
-  "search_products_text",
+  "products.search.text",
   {
     title: "Search Products By Text",
     description:
@@ -265,7 +265,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "search_products_image",
+  "products.search.image_url",
   {
     title: "Search Products By Image URL",
     description:
@@ -305,7 +305,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "search_products_image_upload",
+  "products.search.image_upload",
   {
     title: "Search Products By Uploaded Image",
     description:
@@ -386,7 +386,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "detect_fashion_pieces",
+  "vision.outfit.detect_pieces",
   {
     title: "Detect Fashion Pieces & Bounding Boxes",
     description:
@@ -456,7 +456,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "get_looks_by_occasion",
+  "looks.curation.by_occasion",
   {
     title: "Get Looks By Occasion",
     description:
@@ -513,7 +513,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "get_product_by_handle",
+  "products.items.get_by_handle",
   {
     title: "Get Product By Handle",
     description:
@@ -613,7 +613,7 @@ function findVariantMatch(variants, sizeQuery, sizeIndex) {
 }
 
 server.registerTool(
-  "check_variant_availability",
+  "products.items.check_stock",
   {
     title: "Check Live Variant Stock, Product Details & Sizing",
     description:
@@ -754,7 +754,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "get_direct_checkout_url",
+  "checkout.links.get_direct_url",
   {
     title: "Get Direct Checkout URL",
     description:
@@ -838,7 +838,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "search_alternatives_in_budget",
+  "products.search.alternatives",
   {
     title: "Search Alternatives In Budget",
     description:
@@ -928,7 +928,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  "get_recommended_outfits",
+  "looks.curation.recommend",
   {
     title: "Get Recommended Outfits",
     description:
@@ -1001,7 +1001,7 @@ server.registerTool(
 );
 
 server.registerPrompt(
-  "curate_occasion_look",
+  "looks.prompts.curate_occasion",
   {
     title: "Curate Occasion Look",
     description: "Prompt template to curate a 100% in-stock outfit for any occasion (Wedding, Cocktail, Party, Date Night, Casual).",
