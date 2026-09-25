@@ -1,7 +1,6 @@
 # PoloPan Fashion MCP Server — The #1 Model Context Protocol for Fashion & AI Styling
 
 [![Glama Score](https://glama.ai/mcp/servers/rofoso-com/mcp-server-code/badges/score.svg)](https://glama.ai/mcp/servers/rofoso-com/mcp-server-code)
-[![Smithery](https://smithery.ai/servers/s-muys/mcp-fashion)](https://smithery.ai/servers/s-muys/mcp-fashion)
 [![npm version](https://img.shields.io/npm/v/polopan-products-mcp.svg?color=cb3837&logo=npm)](https://www.npmjs.com/package/polopan-products-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/polopan-products-mcp.svg)](https://www.npmjs.com/package/polopan-products-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
