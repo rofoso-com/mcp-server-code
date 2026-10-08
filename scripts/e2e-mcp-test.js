@@ -1,6 +1,6 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Client } from "../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js";
+import { StdioClientTransport } from "../node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js";
+import { CallToolResultSchema, ListToolsResultSchema } from "../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js";
 import assert from "node:assert/strict";
 import {
   formatReturnPolicy,

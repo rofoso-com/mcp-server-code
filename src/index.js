@@ -8,6 +8,8 @@ import {
   applyPurchaseLinksToMcpPayload,
   buildPurchaseLinkResolverOptions,
   extractProductDetailsTable,
+  extractProductSizeChart,
+  recommendBestSize,
   formatReturnPolicy,
   formatShippingPolicy,
   isLookFullyInStock,
@@ -212,7 +214,7 @@ function parseBudgetRange(budgetRange) {
 
 const server = new McpServer({
   name: "polopan-products",
-  version: "1.2.5",
+  version: "1.2.9",
 });
 
 server.registerTool(
@@ -796,6 +798,7 @@ server.registerTool(
       : 0;
 
     const productDetails = extractProductDetailsTable(product);
+    const sizeChart = extractProductSizeChart(product);
     const shippingDays = Number(product?.shippingDays || product?.shipping_days || 1) || 1;
     const returnAllowed = product?.returnAllowed ?? product?.return_allowed ?? true;
     const returnDays = typeof product?.returnDays === "number" ? product.returnDays : (typeof product?.return_days === "number" ? product.return_days : 10);
@@ -806,6 +809,7 @@ server.registerTool(
       title: product?.title || "",
       vendor: product?.vendor || "",
       product_details: productDetails,
+      size_chart: sizeChart,
       is_in_stock: availableSizes.length > 0,
       sizes,
       available_sizes: availableSizes,
@@ -838,6 +842,121 @@ server.registerTool(
         {
           type: "text",
           text: JSON.stringify(stockSummary),
+        },
+      ],
+    };
+  }
+);
+
+server.registerTool(
+  "products.items.get_size_guide",
+  {
+    title: "Get Product Size Guide & Fit Recommendation",
+    description:
+      "Retrieve the complete size guide chart, body measurement matrix (Chest/Bust, Waist, Hip, Length, Shoulders), unit switcher (inches/cm), how-to-measure guidelines, and automatic best-fit size recommendations for a specific product handle.\n\n" +
+      "PURPOSE & DISAMBIGUATION:\n" +
+      "- Dedicated size guide and fit consultancy tool for apparel and footwear.\n" +
+      "- Computes dimensional measurements across sizes, supports metric (cm) <-> imperial (in) unit conversions, and maps international/brand scales.\n" +
+      "- If user body measurements are provided (e.g. chest: 40 in, waist: 32 in), computes the best matching size variant with fit confidence and relaxed vs snug fit advice.\n" +
+      "- Distinct from 'products.items.check_stock': Use 'products.items.get_size_guide' when the user asks sizing/fit questions (e.g. 'What size fits a 40 chest?' or 'Show me the size chart'); use 'products.items.check_stock' for inventory checking.\n\n" +
+      "WHEN TO USE:\n" +
+      "- When a user asks about sizing, fit, measurements, or how a garment fits (e.g., 'Is M true to size?', 'What are the chest measurements for this shirt in cm?').\n" +
+      "- When helping a customer choose between two sizes based on their body dimensions.\n" +
+      "- When rendering a full size chart matrix.\n\n" +
+      "WHEN NOT TO USE:\n" +
+      "- Do NOT use for products without size variants (e.g., standard accessories, bags).\n\n" +
+      "BEHAVIOR & SAFETY:\n" +
+      "- Read-only and idempotent.\n" +
+      "- Supports 'in' (inches) and 'cm' (centimeters) with automated dynamic range conversion.\n" +
+      "- Connects each recommended size to its direct 1-click checkout permalink (https://s.polopan.com/p/{handle}/{size_index}).\n\n" +
+      "PARAMETERS & CONSTRAINTS:\n" +
+      "- 'handle' (string, required): Unique product handle identifier.\n" +
+      "- 'unit' (enum 'in' | 'cm', default 'in'): Preferred measurement unit system.\n" +
+      "- 'desired_size' (string, optional): Specific size variant to inspect (e.g. 'M', 'L', '32', '40').\n" +
+      "- 'user_chest' (number, optional): User's chest / bust body measurement.\n" +
+      "- 'user_waist' (number, optional): User's waist body measurement.\n" +
+      "- 'user_hip' (number, optional): User's hip body measurement.\n" +
+      "- 'user_unit' (enum 'in' | 'cm', default 'in'): Unit of the user's provided body measurements.",
+    inputSchema: {
+      handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206')"),
+      unit: z.enum(["in", "cm"]).default("in").describe("Measurement unit system for the size chart ('in' for inches, 'cm' for centimeters)"),
+      desired_size: z.string().optional().describe("Optional specific size label to highlight or verify (e.g. 'M', 'L', 'XL', '32')"),
+      user_chest: z.number().optional().describe("Optional user body chest/bust measurement for automated fit recommendation"),
+      user_waist: z.number().optional().describe("Optional user body waist measurement for automated fit recommendation"),
+      user_hip: z.number().optional().describe("Optional user body hip measurement for automated fit recommendation"),
+      user_unit: z.enum(["in", "cm"]).default("in").describe("Unit for the user's input measurements ('in' or 'cm')"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 1.0,
+    },
+  },
+  async ({ handle, unit, desired_size, user_chest, user_waist, user_hip, user_unit }) => {
+    const product = await apiGet(`/products/handle/${encodeURIComponent(handle.trim())}`);
+    const variants = Array.isArray(product?.variants) ? product.variants : [];
+    const basePurchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
+
+    const sizeChart = extractProductSizeChart(product, { unit });
+    const userMeasurements = {
+      chest: user_chest,
+      waist: user_waist,
+      hip: user_hip,
+      unit: user_unit || unit || "in",
+    };
+
+    const fitRecommendation = sizeChart ? recommendBestSize(sizeChart, userMeasurements) : null;
+
+    // Build variant size inventory & checkout links
+    const sizes = [];
+    const availableSizes = [];
+    if (variants.length > 0) {
+      for (let idx = 0; idx < variants.length; idx++) {
+        const v = variants[idx];
+        const sizeLabel = v.option1 || v.title || `Option ${idx}`;
+        const isAvailable = (typeof v.inventory_quantity !== "number" || v.inventory_quantity > 0) && v.available !== false;
+        const checkoutUrl = `${basePurchaseUrl}/${idx}`;
+
+        sizes.push({
+          size_index: idx,
+          size: sizeLabel,
+          price: v.price,
+          available: isAvailable,
+          checkout_url: checkoutUrl,
+        });
+
+        if (isAvailable) {
+          availableSizes.push(sizeLabel);
+        }
+      }
+    }
+
+    const { index: matchedIndex } = findVariantMatch(variants, fitRecommendation?.recommended_size || desired_size, undefined);
+
+    const result = {
+      handle: handle.trim(),
+      title: product?.title || "",
+      vendor: product?.vendor || "",
+      unit: unit || "in",
+      size_chart_available: sizeChart !== null,
+      size_chart: sizeChart,
+      fit_recommendation: fitRecommendation ? {
+        ...fitRecommendation,
+        size_index: matchedIndex,
+        checkout_url: `${basePurchaseUrl}/${matchedIndex}`,
+      } : null,
+      available_sizes: availableSizes,
+      variants: sizes,
+      purchase_url: basePurchaseUrl,
+      recommended_checkout_url: `${basePurchaseUrl}/${matchedIndex}`,
+    };
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(result),
         },
       ],
     };

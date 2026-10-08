@@ -186,8 +186,443 @@ function sanitizeProductObject(product, linkByHandle) {
   next.cancellation_policy_text = cancellationAllowed ? "Allowed before dispatch" : "Non-cancellable once placed";
 
   next.product_details = extractProductDetailsTable(next);
+  next.size_chart = extractProductSizeChart(next);
 
   return next;
+}
+
+/**
+ * Format column header abbreviations (e.g. replacing 'in' with 'cm' or vice versa).
+ */
+export function formatColumnHeader(colName, selectedUnit = "in") {
+  if (!colName || typeof colName !== "string" || !colName.trim()) return colName;
+
+  const normalizedUnit = (selectedUnit || "in").toLowerCase().trim();
+
+  if (normalizedUnit === "cm") {
+    let result = colName.replaceAll(/\((?:in|ins|inch|inches|in\.)\)/gi, (m) =>
+      m === m.toUpperCase() ? "(CM)" : "(cm)"
+    );
+    result = result.replaceAll(/\[(?:in|ins|inch|inches|in\.)\]/gi, (m) =>
+      m === m.toUpperCase() ? "[CM]" : "[cm]"
+    );
+    result = result.replaceAll(/\b(?:inches|inch|ins)\b/gi, (m) =>
+      m === m.toUpperCase() ? "CM" : "cm"
+    );
+    result = result.replaceAll(/(^|[\s/_\-])(?:in|in\.)(?=[\s/_\-]|$)/gi, (m, prefix) => {
+      const matched = m.slice(prefix.length);
+      const replacement = matched === matched.toUpperCase() ? "CM" : "cm";
+      return `${prefix}${replacement}`;
+    });
+    return result;
+  } else {
+    let result = colName.replaceAll(/\((?:cm|cms|cm\.|centimeters?|centimetres?)\)/gi, (m) =>
+      m === m.toUpperCase() ? "(IN)" : "(in)"
+    );
+    result = result.replaceAll(/\[(?:cm|cms|cm\.|centimeters?|centimetres?)\]/gi, (m) =>
+      m === m.toUpperCase() ? "[IN]" : "[in]"
+    );
+    result = result.replaceAll(/\b(?:cms|cm\.|centimeters?|centimetres?)\b/gi, (m) =>
+      m === m.toUpperCase() ? "IN" : "in"
+    );
+    result = result.replaceAll(/(^|[\s/_\-])cm(?=[\s/_\-]|$)/gi, (m, prefix) => {
+      const matched = m.slice(prefix.length);
+      const replacement = matched === matched.toUpperCase() ? "IN" : "in";
+      return `${prefix}${replacement}`;
+    });
+    return result;
+  }
+}
+
+/**
+ * Convert numeric values between inches and cm.
+ */
+export function convertMeasurementValue(val, fromUnit = "in", toUnit = "in") {
+  const from = (fromUnit || "in").toLowerCase().trim();
+  const to = (toUnit || "in").toLowerCase().trim();
+  if (from === to || typeof val !== "number" || Number.isNaN(val)) return val;
+
+  let converted = val;
+  if (from === "in" && to === "cm") {
+    converted = val * 2.54;
+  } else if (from === "cm" && to === "in") {
+    converted = val / 2.54;
+  }
+
+  if (converted % 1 === 0) {
+    return converted.toString();
+  }
+  return Number(converted.toFixed(1)).toString();
+}
+
+/**
+ * Convert measurement strings (including numeric ranges like '38 - 40') between units.
+ */
+export function convertMeasurementString(rawVal, fromUnit = "in", toUnit = "in") {
+  if (rawVal === null || rawVal === undefined) return "—";
+  const str = String(rawVal).trim();
+  if (!str || str === "—" || str === "-" || str === "--") return "—";
+
+  const from = (fromUnit || "in").toLowerCase().trim();
+  const to = (toUnit || "in").toLowerCase().trim();
+  if (from === to) return str;
+
+  // Handle range e.g. "38-40" or "38 - 40"
+  const rangeMatch = str.match(/^(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)$/);
+  if (rangeMatch) {
+    const v1 = parseFloat(rangeMatch[1]);
+    const v2 = parseFloat(rangeMatch[2]);
+    if (!Number.isNaN(v1) && !Number.isNaN(v2)) {
+      const c1 = convertMeasurementValue(v1, from, to);
+      const c2 = convertMeasurementValue(v2, from, to);
+      return `${c1} - ${c2}`;
+    }
+  }
+
+  // Handle single numeric value e.g. "38" or "38.5"
+  const numVal = parseFloat(str);
+  if (!Number.isNaN(numVal) && String(numVal) === str.replace(/^[^\d.]+/, "").replace(/[^\d.]+$/, "")) {
+    return convertMeasurementValue(numVal, from, to);
+  }
+
+  return str;
+}
+
+function stripHtml(html) {
+  if (!html || typeof html !== "string") return "";
+  return html
+    .replaceAll(/<br\s*\/?>/gi, "\n")
+    .replaceAll(/<[^>]*>/g, " ")
+    .replaceAll("&nbsp;", " ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+}
+
+function hasMeaningfulValue(val) {
+  if (val === null || val === undefined) return false;
+  const trimmed = String(val).trim();
+  if (!trimmed || trimmed === "—" || trimmed === "-" || trimmed === "--") return false;
+  const lower = trimmed.toLowerCase();
+  if (lower === "null" || lower === "n/a" || lower === "na" || lower === "none") return false;
+  return true;
+}
+
+/**
+ * Generate a clean GitHub Flavored Markdown table from columns and row objects.
+ */
+function generateMarkdownTable(columns, rows) {
+  if (!columns.length || !rows.length) return "";
+  const headerLine = `| ${columns.join(" | ")} |`;
+  const separatorLine = `| ${columns.map(() => ":---").join(" | ")} |`;
+  const dataLines = rows.map((row) => `| ${columns.map((col) => row[col] ?? "—").join(" | ")} |`);
+  return [headerLine, separatorLine, ...dataLines].join("\n");
+}
+
+/**
+ * Extract structured size guide, measurement matrix, and fit guidelines from a product.
+ */
+export function extractProductSizeChart(product, options = {}) {
+  if (!product || typeof product !== "object") return null;
+
+  const targetUnit = (options.unit || "in").toLowerCase().trim() === "cm" ? "cm" : "in";
+  let baseUnit = "in";
+  let columns = [];
+  let measurements = [];
+  let chartImageUrl = null;
+  let disclaimer = null;
+  const howToMeasure = {};
+
+  // 1. Direct size_chart / sizeChart object
+  const rawChart = product.size_chart || product.sizeChart || product.style?.size_chart || product.style?.sizechart;
+  if (rawChart && typeof rawChart === "object" && (Array.isArray(rawChart.measurements) || Array.isArray(rawChart.columns))) {
+    if (rawChart.unit && typeof rawChart.unit === "string") {
+      baseUnit = rawChart.unit.toLowerCase().trim() === "cm" ? "cm" : "in";
+    }
+    if (Array.isArray(rawChart.columns)) {
+      columns = [...rawChart.columns];
+    }
+    if (Array.isArray(rawChart.measurements)) {
+      measurements = rawChart.measurements.map((m) => ({ ...m }));
+    }
+    chartImageUrl = rawChart.chartImageUrl || rawChart.chart_image_url || rawChart.sizeRepresentationUrl || rawChart.sizeChartUrl || null;
+  }
+
+  // 2. Fallback: Parse style.sizes array
+  const style = product.style;
+  if ((!measurements || measurements.length === 0) && style && typeof style === "object") {
+    const sizes = style.sizes;
+    if (Array.isArray(sizes) && sizes.length > 0) {
+      const allColKeys = new Set();
+      for (const s of sizes) {
+        if (!s || typeof s !== "object") continue;
+        const measList = s.measurements;
+        if (Array.isArray(measList)) {
+          for (const m of measList) {
+            if (m && typeof m === "object" && m.name) {
+              const n = String(m.name).trim();
+              if (n) allColKeys.add(n);
+            }
+          }
+        }
+      }
+
+      const sortedCols = [...allColKeys].sort();
+      columns = ["Size", ...sortedCols];
+      measurements = [];
+
+      for (const s of sizes) {
+        if (!s || typeof s !== "object") continue;
+        const label = String(s.label || s.sizeValue || "").trim();
+        const row = { Size: label };
+
+        const allSizesList = s.allSizesList;
+        if (Array.isArray(allSizesList)) {
+          for (const item of allSizesList) {
+            if (item && item.scaleCode === "brand_size" && item.sizeValue) {
+              const bVal = String(item.sizeValue).trim();
+              if (bVal && bVal !== label) {
+                row["Brand Size"] = bVal;
+                if (!columns.includes("Brand Size")) {
+                  columns.splice(1, 0, "Brand Size");
+                }
+              }
+              break;
+            }
+          }
+        }
+
+        const measList = s.measurements;
+        if (Array.isArray(measList)) {
+          for (const m of measList) {
+            if (m && typeof m === "object") {
+              const n = String(m.name || "").trim();
+              const v = String(m.displayText || m.value || "").trim();
+              if (n) row[n] = v;
+            }
+          }
+        }
+
+        if (label || Object.keys(row).length > 1) {
+          measurements.push(row);
+        }
+      }
+
+      if (style.sizechart && typeof style.sizechart === "object") {
+        chartImageUrl = style.sizechart.sizeRepresentationUrl || style.sizechart.sizeChartUrl || null;
+      }
+    }
+  }
+
+  if (style && typeof style === "object") {
+    if (typeof style.sizeChartDisclaimerText === "string" && style.sizeChartDisclaimerText.trim()) {
+      disclaimer = style.sizeChartDisclaimerText.trim();
+    }
+
+    const descriptors = style.descriptors;
+    if (Array.isArray(descriptors)) {
+      for (const d of descriptors) {
+        if (!d || typeof d !== "object") continue;
+        const title = String(d.title || d.descriptorType || "").trim();
+        const desc = stripHtml(String(d.description || d.value || ""));
+        if (desc && (/measure/i.test(title) || /size/i.test(title) || /fit/i.test(title))) {
+          howToMeasure[title || "How to Measure"] = desc;
+        }
+      }
+    }
+  }
+
+  if (measurements.length === 0 && columns.length === 0) {
+    return null;
+  }
+
+  // Identify primary size key
+  const sizeKey = columns.find((c) => /size/i.test(c)) || columns[0] || "Size";
+
+  // Hide any dimension (column) that has no meaningful value across all measurements (matching mobile app)
+  const validColumns = columns.filter((col) => {
+    if (col === sizeKey || col === "Brand Size") return true;
+    return measurements.some((m) => hasMeaningfulValue(m[col]));
+  });
+
+  // Filter out any row that has no meaningful dimension values
+  const validMeasurements = measurements.filter((m) => {
+    return validColumns.some((col) => col !== sizeKey && col !== "Brand Size" && hasMeaningfulValue(m[col]));
+  });
+
+  const finalMeasurementsList = validMeasurements.length > 0 ? validMeasurements : measurements;
+
+  // Format column headers with target unit
+  const formattedColumns = validColumns.map((col) => {
+    if (col === sizeKey || col === "Brand Size") return col;
+    return formatColumnHeader(col, targetUnit);
+  });
+
+  // Convert measurement row values
+  const convertedMeasurements = finalMeasurementsList.map((row) => {
+    const convertedRow = {};
+    for (const col of validColumns) {
+      const rawVal = row[col];
+      const targetHeader = (col === sizeKey || col === "Brand Size") ? col : formatColumnHeader(col, targetUnit);
+      if (col === sizeKey || col === "Brand Size") {
+        convertedRow[targetHeader] = rawVal ?? "—";
+      } else {
+        convertedRow[targetHeader] = convertMeasurementString(rawVal, baseUnit, targetUnit);
+      }
+    }
+    return convertedRow;
+  });
+
+  // Dynamic Transpose Logic (matching mobile app: shouldTranspose = validColumns.length <= measurements.length)
+  const shouldTranspose = validColumns.length <= finalMeasurementsList.length;
+  const metricColumns = validColumns.filter((c) => c !== sizeKey && c !== "Brand Size");
+
+  // Build Transposed Table Representation
+  const transposedHeaders = [formatColumnHeader(sizeKey, targetUnit), ...finalMeasurementsList.map((m) => String(m[sizeKey] || "—"))];
+  const transposedRows = metricColumns.map((metricCol) => {
+    const rowHeader = formatColumnHeader(metricCol, targetUnit);
+    const rowObj = { [transposedHeaders[0]]: rowHeader };
+    for (let idx = 0; idx < finalMeasurementsList.length; idx++) {
+      const origRow = finalMeasurementsList[idx];
+      const colName = transposedHeaders[idx + 1];
+      const rawVal = origRow[metricCol];
+      rowObj[colName] = convertMeasurementString(rawVal, baseUnit, targetUnit);
+    }
+    return rowObj;
+  });
+
+  // Pre-rendered clean Markdown table
+  const markdownTable = shouldTranspose
+    ? generateMarkdownTable(transposedHeaders, transposedRows)
+    : generateMarkdownTable(formattedColumns, convertedMeasurements);
+
+  return {
+    available: true,
+    unit: targetUnit,
+    base_unit: baseUnit,
+    should_transpose: shouldTranspose,
+    columns: formattedColumns,
+    measurements: convertedMeasurements,
+    transposed_columns: transposedHeaders,
+    transposed_measurements: transposedRows,
+    table_markdown: markdownTable,
+    chart_image_url: chartImageUrl,
+    disclaimer: disclaimer || "Tip: If you are between sizes, choose the larger size for a relaxed fit or the smaller size for a snug fit.",
+    how_to_measure: Object.keys(howToMeasure).length > 0 ? howToMeasure : {
+      "Chest / Bust": "Measure around the fullest part of your chest, keeping the tape measure horizontal.",
+      "Waist": "Measure around your natural waistline, where your trousers usually sit.",
+      "Length": "Measure from the highest point of the shoulder down to the bottom hem.",
+    },
+  };
+}
+
+/**
+ * Recommend the best matching size given user body measurements.
+ */
+export function recommendBestSize(sizeChart, userMeasurements = {}) {
+  if (!sizeChart || !Array.isArray(sizeChart.measurements) || sizeChart.measurements.length === 0) {
+    return null;
+  }
+
+  const chartUnit = sizeChart.unit || "in";
+  const userUnit = (userMeasurements.unit || chartUnit).toLowerCase().trim();
+
+  // Normalize user measurements to chart unit
+  const targetChest = typeof userMeasurements.chest === "number"
+    ? (userUnit === chartUnit ? userMeasurements.chest : (userUnit === "cm" ? userMeasurements.chest / 2.54 : userMeasurements.chest * 2.54))
+    : null;
+
+  const targetWaist = typeof userMeasurements.waist === "number"
+    ? (userUnit === chartUnit ? userMeasurements.waist : (userUnit === "cm" ? userMeasurements.waist / 2.54 : userMeasurements.waist * 2.54))
+    : null;
+
+  const targetHip = typeof userMeasurements.hip === "number"
+    ? (userUnit === chartUnit ? userMeasurements.hip : (userUnit === "cm" ? userMeasurements.hip / 2.54 : userMeasurements.hip * 2.54))
+    : null;
+
+  if (targetChest === null && targetWaist === null && targetHip === null) {
+    return null;
+  }
+
+  const columns = sizeChart.columns || [];
+  const chestCol = columns.find((c) => /chest|bust/i.test(c));
+  const waistCol = columns.find((c) => /waist/i.test(c));
+  const hipCol = columns.find((c) => /hip/i.test(c));
+  const sizeKey = columns.find((c) => /size/i.test(c)) || columns[0] || "Size";
+
+  function parseDim(valStr) {
+    if (!valStr) return null;
+    const str = String(valStr).trim();
+    const rangeMatch = str.match(/^(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)$/);
+    if (rangeMatch) {
+      return (parseFloat(rangeMatch[1]) + parseFloat(rangeMatch[2])) / 2;
+    }
+    const num = parseFloat(str);
+    return Number.isNaN(num) ? null : num;
+  }
+
+  let bestSize = null;
+  let minDiff = Infinity;
+  let matchedDetails = {};
+  let alternativeSize = null;
+
+  for (let i = 0; i < sizeChart.measurements.length; i++) {
+    const row = sizeChart.measurements[i];
+    const sizeLabel = row[sizeKey] || `Size ${i}`;
+
+    let totalDiff = 0;
+    let counted = 0;
+
+    if (targetChest !== null && chestCol && row[chestCol]) {
+      const gChest = parseDim(row[chestCol]);
+      if (gChest !== null) {
+        totalDiff += Math.abs(gChest - targetChest);
+        counted++;
+      }
+    }
+
+    if (targetWaist !== null && waistCol && row[waistCol]) {
+      const gWaist = parseDim(row[waistCol]);
+      if (gWaist !== null) {
+        totalDiff += Math.abs(gWaist - targetWaist) * 1.1; // Slight weight on waist
+        counted++;
+      }
+    }
+
+    if (targetHip !== null && hipCol && row[hipCol]) {
+      const gHip = parseDim(row[hipCol]);
+      if (gHip !== null) {
+        totalDiff += Math.abs(gHip - targetHip);
+        counted++;
+      }
+    }
+
+    if (counted > 0) {
+      const avgDiff = totalDiff / counted;
+      if (avgDiff < minDiff) {
+        minDiff = avgDiff;
+        bestSize = sizeLabel;
+        matchedDetails = {
+          size: sizeLabel,
+          ...row,
+        };
+        if (i + 1 < sizeChart.measurements.length) {
+          alternativeSize = sizeChart.measurements[i + 1][sizeKey];
+        }
+      }
+    }
+  }
+
+  if (!bestSize) return null;
+
+  return {
+    recommended_size: bestSize,
+    confidence: minDiff <= 1.5 ? "High (Exact Match)" : (minDiff <= 3.0 ? "Good Match" : "Approximate Fit"),
+    fit_advice: minDiff <= 1.0
+      ? `Size ${bestSize} matches your exact dimensions.`
+      : `Size ${bestSize} is the closest match for your measurements.${alternativeSize ? ` For a more relaxed/oversized fit, you may also consider Size ${alternativeSize}.` : ""}`,
+    garment_measurements: matchedDetails,
+    unit: chartUnit,
+  };
 }
 
 /** Extract tabular product details matching mobile app tabular attribute specifications. */
