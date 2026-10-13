@@ -49,7 +49,7 @@
   "author": "PoloPan",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rofoso-com/polopan-fashion-mcp"
+    "url": "git+https://github.com/rofoso-com/polopan-fashion-mcp.git"
   },
   "homepage": "https://polopan.com",
   "license": "MIT",
