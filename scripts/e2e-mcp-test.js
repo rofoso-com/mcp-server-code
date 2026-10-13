@@ -186,19 +186,60 @@ async function runE2ETests() {
   assert(typeof stockRes.shipping_policy_text === "string", "Must provide formatted shipping_policy_text");
   console.log("✅ [TEST 4 PASSED] Real-time stock, pricing, details table, and policy strings verified.");
 
-  // 5. Direct Checkout URL Generator (size selection -> /{size_index})
-  console.log(`\n[TEST 5] Testing 'checkout.links.get_direct_url' for 1-click checkout...`);
+  // 5. Address Management & Prefilled Checkout URL Generator
+  console.log(`\n[TEST 5] Testing Address Management & 1-Click Prefilled Checkout...`);
+  
+  // 5a. Save Address
+  const saveAddrRes = await callTool("address.save", {
+    firstName: "Shekhar",
+    lastName: "Chatterjee",
+    address1: "Flat 402, Marina Crown",
+    address2: "Dubai Marina",
+    city: "Dubai",
+    province: "Dubai",
+    zip: "00000",
+    country: "AE",
+    phone: "+971501234567",
+    email: "shekhar@example.com",
+    type: "Home",
+    is_default: true,
+  });
+  console.log(`✓ Saved address: ${saveAddrRes.address?.id} (${saveAddrRes.address?.firstName} in ${saveAddrRes.address?.city})`);
+  assert.equal(saveAddrRes.success, true, "Address save must succeed");
+  const testAddrId = saveAddrRes.address.id;
+
+  // 5b. Get Current Address for AE
+  const getAddrRes = await callTool("address.get_current", { country: "AE" });
+  assert.equal(getAddrRes.has_address, true, "Must find saved address for AE");
+  assert.equal(getAddrRes.address.city, "Dubai", "Address city must be Dubai");
+
+  // 5c. List Saved Addresses
+  const listAddrRes = await callTool("address.list_saved", { country: "AE" });
+  assert(listAddrRes.count >= 1, "Must find at least 1 address for AE");
+
+  // 5d. Direct Checkout URL Generator with Prefilled Address
+  console.log(`✓ Testing 'checkout.links.get_direct_url' with address prefill...`);
   const checkoutRes = await callTool("checkout.links.get_direct_url", {
     handle: sampleHandle,
     size: "L",
     quantity: 1,
     coupon: "SAVE15",
+    address_id: testAddrId,
   });
   console.log(`✓ Generated 1-Click Checkout URL: ${checkoutRes.checkout_url}`);
   assert(checkoutRes.checkout_url.startsWith("https://s.polopan.com/p/"), "Must be a verified s.polopan.com link");
   assert(checkoutRes.checkout_url.match(/https:\/\/s\.polopan\.com\/p\/[^\/]+\/\d+/), "Must append size_index (/0, /1, etc.)");
-  assert(checkoutRes.checkout_url.includes("coupon=SAVE15"), "Must include coupon parameter");
-  console.log("✅ [TEST 5 PASSED] Direct checkout permalink with /{size_index} generation verified.");
+  assert(checkoutRes.checkout_url.includes("discount=SAVE15"), "Must include discount parameter");
+  assert(checkoutRes.checkout_url.includes("checkout%5Bshipping_address%5D%5Bfirst_name%5D=Shekhar") || checkoutRes.checkout_url.includes("first_name=Shekhar"), "Must include first_name prefill");
+  assert(checkoutRes.checkout_url.includes("Dubai"), "Must include city prefill");
+  assert.equal(checkoutRes.has_address, true, "has_address must be true");
+  assert.equal(checkoutRes.address_prefilled, true, "address_prefilled must be true");
+
+  // 5e. Clean up test address
+  const delRes = await callTool("address.delete", { address_id: testAddrId });
+  assert.equal(delRes.success, true, "Address deletion must succeed");
+  console.log(`✓ Cleaned up test address: ${delRes.deleted_id}`);
+  console.log("✅ [TEST 5 PASSED] Address saving, retrieval, prefilling, and deletion verified.");
 
   // 6. Occasion Looks Discovery Test (Strict 100% In-Stock Guarantee)
   console.log("\n[TEST 6] Testing 'looks.curation.by_occasion' ('Party') & in-stock filtering...");

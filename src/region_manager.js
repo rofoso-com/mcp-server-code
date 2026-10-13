@@ -196,32 +196,62 @@ export function getLocalRegionConfigPath() {
 }
 
 /**
- * Load saved region configuration from local JSON file.
+ * Load raw JSON configuration file from disk.
  */
-export function loadSavedRegionConfig(defaultCountryCode = "IN", defaultMode = "global") {
+export function loadRawConfig() {
   const filePath = getLocalRegionConfigPath();
   try {
     if (fs.existsSync(filePath)) {
       const raw = fs.readFileSync(filePath, "utf-8");
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && parsed.country_code) {
-        return {
-          country_code: parsed.country_code.toUpperCase(),
-          country_name: parsed.country_name || parsed.country_code,
-          flag: parsed.flag || "🌐",
-          currency: parsed.currency || "USD",
-          currency_symbol: parsed.currency_symbol || parsed.symbol || "$",
-          phone: parsed.phone || "",
-          mode: parsed.mode === "local" ? "local" : "global",
-          is_indexed: Boolean(parsed.is_indexed),
-          price_groups: Array.isArray(parsed.price_groups) ? parsed.price_groups : [],
-          updated_at: parsed.updated_at || new Date().toISOString(),
-          config_file: filePath,
-        };
+      if (parsed && typeof parsed === "object") {
+        return parsed;
       }
     }
+  } catch {}
+  return {};
+}
+
+/**
+ * Save raw configuration payload to local JSON file.
+ */
+export function saveRawConfig(data) {
+  const filePath = getLocalRegionConfigPath();
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+    return { success: true, file: filePath, config: data };
   } catch (err) {
-    // Silent fallback if parsing fails
+    return { success: false, error: err.message, file: filePath };
+  }
+}
+
+/**
+ * Load saved region configuration from local JSON file.
+ */
+export function loadSavedRegionConfig(defaultCountryCode = "IN", defaultMode = "global") {
+  const filePath = getLocalRegionConfigPath();
+  const rawConfig = loadRawConfig();
+
+  if (rawConfig && rawConfig.country_code) {
+    return {
+      country_code: rawConfig.country_code.toUpperCase(),
+      country_name: rawConfig.country_name || rawConfig.country_code,
+      flag: rawConfig.flag || "🌐",
+      currency: rawConfig.currency || "USD",
+      currency_symbol: rawConfig.currency_symbol || rawConfig.symbol || "$",
+      phone: rawConfig.phone || "",
+      mode: rawConfig.mode === "local" ? "local" : "global",
+      is_indexed: Boolean(rawConfig.is_indexed),
+      price_groups: Array.isArray(rawConfig.price_groups) ? rawConfig.price_groups : [],
+      addresses: Array.isArray(rawConfig.addresses) ? rawConfig.addresses : [],
+      default_address_id: rawConfig.default_address_id || null,
+      updated_at: rawConfig.updated_at || new Date().toISOString(),
+      config_file: filePath,
+    };
   }
 
   // Initial fallback
@@ -236,6 +266,8 @@ export function loadSavedRegionConfig(defaultCountryCode = "IN", defaultMode = "
     mode: defaultMode,
     is_indexed: fallbackMatch.is_indexed,
     price_groups: fallbackMatch.price_groups,
+    addresses: [],
+    default_address_id: null,
     updated_at: new Date().toISOString(),
     config_file: filePath,
   };
@@ -243,30 +275,308 @@ export function loadSavedRegionConfig(defaultCountryCode = "IN", defaultMode = "
 
 /**
  * Save active region configuration to local JSON file.
+ * Preserves saved addresses and default_address_id.
  */
 export function saveRegionConfig(regionData) {
-  const filePath = getLocalRegionConfigPath();
-  try {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+  const rawConfig = loadRawConfig();
+  const payload = {
+    ...rawConfig,
+    country_code: regionData.country_code,
+    country_name: regionData.country_name,
+    flag: regionData.flag,
+    currency: regionData.currency,
+    currency_symbol: regionData.currency_symbol,
+    phone: regionData.phone,
+    mode: regionData.mode || "global",
+    is_indexed: Boolean(regionData.is_indexed),
+    price_groups: regionData.price_groups || [],
+    addresses: Array.isArray(rawConfig.addresses) ? rawConfig.addresses : [],
+    default_address_id: rawConfig.default_address_id || null,
+    updated_at: new Date().toISOString(),
+  };
+  return saveRawConfig(payload);
+}
+
+/**
+ * Retrieve saved delivery addresses, optionally filtered by country code.
+ */
+export function getSavedAddresses(countryCode = null) {
+  const config = loadRawConfig();
+  const addresses = Array.isArray(config.addresses) ? config.addresses : [];
+  if (!countryCode) return addresses;
+  const target = String(countryCode).trim().toUpperCase();
+  return addresses.filter((a) => (a.country || "").toUpperCase() === target);
+}
+
+/**
+ * Get active default delivery address for a country or globally.
+ */
+export function getDefaultAddress(countryCode = null) {
+  const config = loadRawConfig();
+  const addresses = Array.isArray(config.addresses) ? config.addresses : [];
+  if (addresses.length === 0) return null;
+
+  const targetCountry = countryCode
+    ? String(countryCode).trim().toUpperCase()
+    : (config.country_code || "").toUpperCase();
+
+  // 1. Check if default_address_id matches and belongs to the country
+  if (config.default_address_id) {
+    const matched = addresses.find((a) => a.id === config.default_address_id);
+    if (matched && (!targetCountry || (matched.country || "").toUpperCase() === targetCountry)) {
+      return matched;
     }
-    const payload = {
-      country_code: regionData.country_code,
-      country_name: regionData.country_name,
-      flag: regionData.flag,
-      currency: regionData.currency,
-      currency_symbol: regionData.currency_symbol,
-      phone: regionData.phone,
-      mode: regionData.mode || "global",
-      is_indexed: Boolean(regionData.is_indexed),
-      price_groups: regionData.price_groups || [],
-      updated_at: new Date().toISOString(),
-    };
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
-    return { success: true, file: filePath, config: payload };
-  } catch (err) {
-    return { success: false, error: err.message, file: filePath };
+  }
+
+  // 2. Check address marked with is_default: true for this country
+  if (targetCountry) {
+    const countryDefault = addresses.find(
+      (a) => (a.country || "").toUpperCase() === targetCountry && a.is_default
+    );
+    if (countryDefault) return countryDefault;
+
+    // First address for this country
+    const firstForCountry = addresses.find(
+      (a) => (a.country || "").toUpperCase() === targetCountry
+    );
+    if (firstForCountry) return firstForCountry;
+  }
+
+  // 3. Fallback to any default or first address
+  return addresses.find((a) => a.is_default) || addresses[0] || null;
+}
+
+/**
+ * Save or update a delivery address in ~/.polopan/region.json.
+ * Validates fields matching newapp (Address model & add_address_sheet).
+ */
+export function saveAddress(addressData, setAsDefault = true) {
+  if (!addressData || typeof addressData !== "object") {
+    throw new Error("Address data must be an object");
+  }
+
+  const rawConfig = loadRawConfig();
+  const addresses = Array.isArray(rawConfig.addresses) ? [...rawConfig.addresses] : [];
+
+  const firstName = (addressData.firstName || addressData.first_name || "").trim();
+  const address1 = (addressData.address1 || addressData.street || "").trim();
+  const city = (addressData.city || "").trim();
+  const zip = (addressData.zip || addressData.postal_code || addressData.pincode || "").trim();
+
+  if (!firstName) throw new Error("firstName (first name) is required");
+  if (!address1) throw new Error("address1 (street address / flat / building) is required");
+  if (!city) throw new Error("city is required");
+  if (!zip) throw new Error("zip / postal code is required");
+
+  const activeCountry = rawConfig.country_code || "IN";
+  const rawCountry = (addressData.country || activeCountry).trim();
+  const matchedCountry = resolveCountryFromList(rawCountry, cachedPlatformCountries);
+  const country = matchedCountry ? matchedCountry.code : rawCountry.toUpperCase();
+
+  const id = addressData.id && String(addressData.id).trim()
+    ? String(addressData.id).trim()
+    : `addr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  const shouldBeDefault = Boolean(setAsDefault || addressData.is_default || addresses.length === 0);
+
+  const normalized = {
+    id,
+    firstName,
+    lastName: (addressData.lastName || addressData.last_name || "").trim(),
+    address1,
+    address2: (addressData.address2 || addressData.landmark || addressData.suite || "").trim(),
+    city,
+    province: (addressData.province || addressData.state || "").trim(),
+    zip,
+    country,
+    phone: (addressData.phone || addressData.mobile || "").trim(),
+    email: (addressData.email || "").trim(),
+    type: (addressData.type || "Home").trim(),
+    is_default: shouldBeDefault,
+    updated_at: new Date().toISOString(),
+  };
+
+  // If set as default, mark existing addresses in same country as not default
+  if (normalized.is_default) {
+    for (const a of addresses) {
+      if ((a.country || "").toUpperCase() === country) {
+        a.is_default = false;
+      }
+    }
+  }
+
+  const existingIndex = addresses.findIndex((a) => a.id === id);
+  if (existingIndex >= 0) {
+    addresses[existingIndex] = normalized;
+  } else {
+    addresses.push(normalized);
+  }
+
+  const newDefaultId = normalized.is_default ? id : (rawConfig.default_address_id || id);
+
+  const payload = {
+    ...rawConfig,
+    addresses,
+    default_address_id: newDefaultId,
+    updated_at: new Date().toISOString(),
+  };
+
+  const saveRes = saveRawConfig(payload);
+  return {
+    success: saveRes.success,
+    address: normalized,
+    total_addresses: addresses.length,
+    config_file: saveRes.file,
+  };
+}
+
+/**
+ * Delete a saved delivery address by ID.
+ */
+export function deleteAddress(addressId) {
+  if (!addressId) throw new Error("addressId is required");
+  const rawConfig = loadRawConfig();
+  const addresses = Array.isArray(rawConfig.addresses) ? rawConfig.addresses : [];
+
+  const targetId = String(addressId).trim();
+  const filtered = addresses.filter((a) => a.id !== targetId);
+  const deleted = filtered.length < addresses.length;
+
+  let newDefaultId = rawConfig.default_address_id;
+  if (newDefaultId === targetId) {
+    newDefaultId = filtered.length > 0 ? filtered[0].id : null;
+  }
+
+  const payload = {
+    ...rawConfig,
+    addresses: filtered,
+    default_address_id: newDefaultId,
+    updated_at: new Date().toISOString(),
+  };
+
+  saveRawConfig(payload);
+  return {
+    success: deleted,
+    deleted_id: targetId,
+    remaining_addresses: filtered.length,
+  };
+}
+
+/**
+ * Set an existing address as default.
+ */
+export function setDefaultAddress(addressId) {
+  if (!addressId) throw new Error("addressId is required");
+  const rawConfig = loadRawConfig();
+  const addresses = Array.isArray(rawConfig.addresses) ? [...rawConfig.addresses] : [];
+
+  const targetId = String(addressId).trim();
+  const matched = addresses.find((a) => a.id === targetId);
+  if (!matched) {
+    throw new Error(`Address with ID '${addressId}' not found`);
+  }
+
+  const country = (matched.country || "").toUpperCase();
+  for (const a of addresses) {
+    if ((a.country || "").toUpperCase() === country) {
+      a.is_default = (a.id === targetId);
+    }
+  }
+
+  matched.is_default = true;
+
+  const payload = {
+    ...rawConfig,
+    addresses,
+    default_address_id: targetId,
+    updated_at: new Date().toISOString(),
+  };
+
+  saveRawConfig(payload);
+  return {
+    success: true,
+    default_address: matched,
+  };
+}
+
+/**
+ * Appends address, buyer identity, and discount parameters to prefill checkout.
+ * Exact equivalent of ShopifyCheckoutService.instance.buildPrefilledCheckoutUrl in newapp.
+ */
+export function buildPrefilledCheckoutUrl(rawCheckoutUrl, address = null, options = {}) {
+  const trimmed = (rawCheckoutUrl || "").trim();
+  if (!trimmed) return trimmed;
+
+  try {
+    const url = new URL(trimmed);
+
+    // Apply promo / discount code if provided
+    const discountCode = options.coupon || options.discount;
+    if (discountCode && String(discountCode).trim()) {
+      url.searchParams.set("discount", String(discountCode).trim());
+    }
+
+    // Apply quantity if greater than 1
+    if (options.quantity && Number(options.quantity) > 1) {
+      url.searchParams.set("quantity", String(options.quantity));
+    }
+
+    if (address && typeof address === "object") {
+      const phone = address.phone || options.phone;
+      if (phone && String(phone).trim()) {
+        url.searchParams.set("checkout[shipping_address][phone]", String(phone).trim());
+        url.searchParams.set("checkout[phone]", String(phone).trim());
+      }
+
+      const email = address.email || options.email;
+      if (email && String(email).trim()) {
+        url.searchParams.set("checkout[email]", String(email).trim());
+      }
+
+      const firstName = address.firstName || address.first_name;
+      if (firstName && String(firstName).trim()) {
+        url.searchParams.set("checkout[shipping_address][first_name]", String(firstName).trim());
+      }
+
+      const lastName = address.lastName || address.last_name;
+      if (lastName && String(lastName).trim()) {
+        url.searchParams.set("checkout[shipping_address][last_name]", String(lastName).trim());
+      }
+
+      const address1 = address.address1 || address.street;
+      if (address1 && String(address1).trim()) {
+        url.searchParams.set("checkout[shipping_address][address1]", String(address1).trim());
+      }
+
+      const address2 = address.address2 || address.landmark || address.suite;
+      if (address2 && String(address2).trim()) {
+        url.searchParams.set("checkout[shipping_address][address2]", String(address2).trim());
+      }
+
+      const city = address.city;
+      if (city && String(city).trim()) {
+        url.searchParams.set("checkout[shipping_address][city]", String(city).trim());
+      }
+
+      const province = address.province || address.state;
+      if (province && String(province).trim()) {
+        url.searchParams.set("checkout[shipping_address][province]", String(province).trim());
+      }
+
+      const zip = address.zip || address.postal_code || address.pincode;
+      if (zip && String(zip).trim()) {
+        url.searchParams.set("checkout[shipping_address][zip]", String(zip).trim());
+      }
+
+      const country = address.country || options.country;
+      if (country && String(country).trim()) {
+        url.searchParams.set("checkout[shipping_address][country]", String(country).trim().toUpperCase());
+      }
+    }
+
+    return url.toString();
+  } catch {
+    return trimmed;
   }
 }
 

@@ -21,6 +21,12 @@ import {
   resolveCountryFromList,
   searchSupportedCountries,
   getLocalRegionConfigPath,
+  getSavedAddresses,
+  getDefaultAddress,
+  saveAddress,
+  deleteAddress,
+  setDefaultAddress,
+  buildPrefilledCheckoutUrl,
 } from "./region_manager.js";
 
 const config = {
@@ -375,6 +381,194 @@ server.registerTool(
         },
       ],
     };
+  }
+);
+
+server.registerTool(
+  "address.get_current",
+  {
+    title: "Get Current Delivery Address for Region",
+    description:
+      "Get the default delivery/shipping address saved for the currently active region from local configuration (~/.polopan/region.json).\n\n" +
+      "WHEN TO USE (CRITICAL ANTI-SHORTCIRCUIT RULE):\n" +
+      "- ALWAYS call this BEFORE generating 1-click checkout links to check if the user already has a saved delivery address for their destination country.\n" +
+      "- If 'has_address' is false, DO NOT emit a naked checkout link. Prompt the user naturally for their shipping address (First Name, Street Address, City, Postal Code, Phone & Email) and save it using 'address.save'.\n" +
+      "- If 'has_address' is true, inform the user you are prefilling their saved address and proceed with checkout.",
+    inputSchema: {
+      country: z.string().optional().describe("Optional country code (e.g. 'US', 'AE', 'GB', 'IN') to inspect addresses for. Defaults to active region country."),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 0.9,
+    },
+  },
+  async ({ country }) => {
+    const targetCountry = country ? (resolveCountryFromList(country)?.code || country.toUpperCase()) : activeRegion.country_code;
+    const addr = getDefaultAddress(targetCountry);
+    const result = {
+      has_address: Boolean(addr),
+      region_country: targetCountry,
+      address: addr || null,
+      message: addr
+        ? `Active default delivery address for ${targetCountry}: ${addr.firstName} ${addr.lastName || ""}, ${addr.address1}, ${addr.city} (${addr.type || "Home"})`
+        : `No saved delivery address found for ${targetCountry}. Please prompt user for recipient name, street address, city, postal code, phone, and email before completing purchase.`,
+    };
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  }
+);
+
+server.registerTool(
+  "address.save",
+  {
+    title: "Save or Update Delivery Address",
+    description:
+      "Save a customer delivery shipping address mapped to the active region in ~/.polopan/region.json.\n\n" +
+      "Matches Flutter app (newapp) address schema: firstName, lastName, address1, address2, city, province, zip, country, phone, email, type.",
+    inputSchema: {
+      firstName: z.string().min(1, "firstName is required").describe("Recipient first name"),
+      lastName: z.string().optional().describe("Recipient last name"),
+      address1: z.string().min(1, "address1 is required").describe("Street address, house/flat/building name"),
+      address2: z.string().optional().describe("Apartment, suite, unit, landmark, or area"),
+      city: z.string().min(1, "city is required").describe("City / Town"),
+      province: z.string().optional().describe("State, Province, or Governorate"),
+      zip: z.string().min(1, "zip is required").describe("Postal code / Zip code / PIN code"),
+      country: z.string().optional().describe("Destination country code or natural name. Defaults to active region country."),
+      phone: z.string().optional().describe("Recipient contact phone number with country dialing code"),
+      email: z.string().optional().describe("Customer delivery notification email address"),
+      type: z.enum(["Home", "Work", "Other"]).default("Home").describe("Address label/type: 'Home', 'Work', or 'Other'"),
+      is_default: z.boolean().default(true).describe("Set this address as default for the country (default true)"),
+      id: z.string().optional().describe("Optional existing address ID to update"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 0.9,
+    },
+  },
+  async (addressInput) => {
+    try {
+      const res = saveAddress(addressInput, addressInput.is_default);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              address: res.address,
+              config_file: res.config_file,
+              message: `Delivery address saved successfully for ${res.address.country} (${res.address.firstName} at ${res.address.address1}, ${res.address.city}).`,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ success: false, error: err.message }),
+          },
+        ],
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "address.list_saved",
+  {
+    title: "List Saved Delivery Addresses",
+    description:
+      "List all saved customer delivery addresses stored in ~/.polopan/region.json, optionally filtered by country.",
+    inputSchema: {
+      country: z.string().optional().describe("Optional country filter (ISO-2 code or natural country name)"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 0.8,
+    },
+  },
+  async ({ country }) => {
+    const targetCountry = country ? (resolveCountryFromList(country)?.code || country.toUpperCase()) : null;
+    const addresses = getSavedAddresses(targetCountry);
+    const defaultAddr = getDefaultAddress(targetCountry || activeRegion.country_code);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            count: addresses.length,
+            addresses,
+            default_address_id: defaultAddr?.id || null,
+          }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+server.registerTool(
+  "address.set_default",
+  {
+    title: "Set Default Delivery Address",
+    description: "Set an existing address as the default shipping address for its country in ~/.polopan/region.json.",
+    inputSchema: {
+      address_id: z.string().min(1, "address_id is required").describe("ID of the saved address to set as default"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 0.7,
+    },
+  },
+  async ({ address_id }) => {
+    try {
+      const res = setDefaultAddress(address_id);
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ success: false, error: err.message }) }],
+      };
+    }
+  }
+);
+
+server.registerTool(
+  "address.delete",
+  {
+    title: "Delete Saved Delivery Address",
+    description: "Delete a saved delivery address by ID from ~/.polopan/region.json.",
+    inputSchema: {
+      address_id: z.string().min(1, "address_id is required").describe("ID of the saved address to delete"),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      audience: ["user", "assistant"],
+      priority: 0.7,
+    },
+  },
+  async ({ address_id }) => {
+    try {
+      const res = deleteAddress(address_id);
+      return {
+        content: [{ type: "text", text: JSON.stringify(res, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ success: false, error: err.message }) }],
+      };
+    }
   }
 );
 
@@ -1183,13 +1377,28 @@ server.registerTool(
       "- 'size' (string, optional): Size label confirmed by user (e.g. 'M', 'L', 'XL', '42').\n" +
       "- 'size_index' (integer >= 0, optional): Zero-based index of the chosen size variant.\n" +
       "- 'quantity' (integer 1-10, default 1): Number of units to purchase.\n" +
-      "- 'coupon' (string, optional): Optional discount coupon code to pre-apply (e.g. 'SAVE15').",
+      "- 'coupon' (string, optional): Optional discount coupon code to pre-apply (e.g. 'SAVE15').\n" +
+      "- 'address_id' (string, optional): ID of specific saved address to prefill.\n" +
+      "- 'address' (object, optional): Delivery address object to prefill directly.",
     inputSchema: {
       handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206')"),
       size: z.string().optional().describe("Size label confirmed by the user (e.g. 'M', 'L', 'XL', '40')"),
       size_index: z.number().int().min(0).optional().describe("Zero-based index of the chosen size variant"),
       quantity: z.number().int().min(1).max(10).default(1).describe("Number of units to purchase (1 to 10, default 1)"),
       coupon: z.string().optional().describe("Optional discount coupon code to pre-apply in the checkout session"),
+      address_id: z.string().optional().describe("Optional saved address ID to prefill"),
+      address: z.object({
+        firstName: z.string().min(1),
+        lastName: z.string().optional(),
+        address1: z.string().min(1),
+        address2: z.string().optional(),
+        city: z.string().min(1),
+        province: z.string().optional(),
+        zip: z.string().min(1),
+        country: z.string().optional(),
+        phone: z.string().optional(),
+        email: z.string().optional(),
+      }).optional().describe("Optional ad-hoc address object to prefill"),
     },
     annotations: {
       readOnlyHint: true,
@@ -1198,7 +1407,7 @@ server.registerTool(
       priority: 1.0,
     },
   },
-  async ({ handle, size, size_index, quantity, coupon }) => {
+  async ({ handle, size, size_index, quantity, coupon, address_id, address }) => {
     const basePurchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
 
     let resolvedIndex = typeof size_index === "number" ? size_index : null;
@@ -1221,18 +1430,24 @@ server.registerTool(
     }
 
     const baseCheckoutUrl = `${basePurchaseUrl}/${resolvedIndex}`;
-    const params = new URLSearchParams();
 
-    if (quantity && quantity > 1) {
-      params.append("quantity", String(quantity));
+    // Resolve address
+    let targetAddress = null;
+    if (address && typeof address === "object") {
+      targetAddress = address;
+    } else if (address_id && typeof address_id === "string") {
+      const allAddresses = getSavedAddresses();
+      targetAddress = allAddresses.find((a) => a.id === address_id.trim()) || null;
+    } else {
+      targetAddress = getDefaultAddress(activeRegion.country_code);
     }
-    if (coupon && coupon.trim()) {
-      params.append("coupon", coupon.trim());
-    }
 
-    const queryString = params.toString();
-    const finalCheckoutUrl = queryString ? `${baseCheckoutUrl}?${queryString}` : baseCheckoutUrl;
+    const finalCheckoutUrl = buildPrefilledCheckoutUrl(baseCheckoutUrl, targetAddress, {
+      quantity,
+      coupon,
+    });
 
+    const hasAddress = Boolean(targetAddress);
     const result = {
       handle: handle.trim(),
       size: resolvedSizeLabel,
@@ -1240,15 +1455,36 @@ server.registerTool(
       price: resolvedPrice,
       quantity,
       coupon: coupon?.trim() || null,
+      has_address: hasAddress,
+      address_prefilled: hasAddress,
+      address_required: !hasAddress,
+      shipping_address: targetAddress
+        ? {
+            id: targetAddress.id || null,
+            name: `${targetAddress.firstName || targetAddress.first_name || ""} ${targetAddress.lastName || targetAddress.last_name || ""}`.trim(),
+            address1: targetAddress.address1 || targetAddress.street || "",
+            address2: targetAddress.address2 || "",
+            city: targetAddress.city || "",
+            province: targetAddress.province || targetAddress.state || "",
+            zip: targetAddress.zip || targetAddress.postal_code || "",
+            country: targetAddress.country || activeRegion.country_code,
+            phone: targetAddress.phone || "",
+            email: targetAddress.email || "",
+            type: targetAddress.type || "Home",
+          }
+        : null,
       checkout_url: finalCheckoutUrl,
-      instructions: "Provide this verified link to the user as the 1-click direct checkout button.",
+      instructions: hasAddress
+        ? `Provide this verified 1-click checkout button to the user. Confirm that shipping address (${targetAddress.address1}, ${targetAddress.city}) has been pre-filled.`
+        : `MANDATORY ANTI-SHORTCIRCUIT RULE: No saved delivery address found for region '${activeRegion.country_code}'. Prompt the user naturally for their shipping address (First Name, Street Address, City, Postal Code, Phone & Email), save it using 'address.save', and re-call 'checkout.links.get_direct_url' with the saved address.`,
+      warning: hasAddress ? null : `Missing delivery address for region ${activeRegion.country_code}`,
     };
 
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify(result),
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };
