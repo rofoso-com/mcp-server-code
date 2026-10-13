@@ -291,11 +291,22 @@ export async function syncPlatformCountries(baseUrl, headers = {}) {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.countries) && data.countries.length > 0) {
-        // Normalize any UK codes to GB for ISO standard consistency
-        cachedPlatformCountries = data.countries.map((c) => ({
-          ...c,
-          code: c.code === "UK" ? "GB" : c.code.toUpperCase(),
-        }));
+        const seedMap = new Map(DEFAULT_SEED_COUNTRIES.map((s) => [s.code, s]));
+        cachedPlatformCountries = data.countries.map((c) => {
+          const code = c.code === "UK" ? "GB" : (c.code ? c.code.toUpperCase() : "");
+          const seed = seedMap.get(code);
+          return {
+            ...c,
+            code,
+            name: (c.name && c.name !== c.code) ? c.name : (seed?.name || c.name || code),
+            currency: (c.currency && c.currency.trim()) ? c.currency.trim().toUpperCase() : (seed?.currency || "USD"),
+            symbol: (c.symbol && c.symbol.trim() && !(c.symbol === "$" && seed?.symbol && seed.symbol !== "$")) ? c.symbol : (seed?.symbol || "$"),
+            phone: (c.phone && c.phone.trim()) ? c.phone : (seed?.phone || ""),
+            flag: c.flag || seed?.flag || "🌐",
+            is_indexed: Boolean(c.is_indexed ?? seed?.is_indexed),
+            price_groups: Array.isArray(c.price_groups) && c.price_groups.length > 0 ? c.price_groups : (seed?.price_groups || []),
+          };
+        });
         platformCountriesLastFetched = now;
       }
     }
