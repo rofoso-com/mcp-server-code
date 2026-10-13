@@ -147,14 +147,17 @@ When a user decides to purchase an item, requests a buy link, or finalizes their
 1. **Check for Saved Address First**: Call `address.get_current(country=...)` to check if a delivery address is already saved for their destination region.
 2. **If `has_address` is false**:
    - **DO NOT** emit the bare checkout link alone.
-   - Prompt the user naturally for their delivery details:
+   - If the user has **already shared their address in this chat context**, use it directly in Step 3!
+   - If not yet shared, prompt the user naturally for their delivery details:
      > *"Before I generate your 1-click direct checkout link, who and where should we deliver this to? Please share your recipient name, street address, city, postal code, phone, and email."*
-   - Once provided, call `address.save(...)` to store it persistently in `~/.polopan/region.json`.
+   - Once provided:
+     - **Local Stdio (`npx -y polopan-products-mcp`)**: Call `address.save(...)` to store it persistently on their device (`~/.polopan/region.json`).
+     - **Cloud-Hosted (`https://mcp-server.polopan.com/mcp`)**: Addresses are never saved to the cloud server's disk to ensure user privacy. Pass the address object directly into `checkout.links.get_direct_url(address={...})`. If the user asks to save it permanently for future sessions, let them know they can install the local MCP (`npx -y polopan-products-mcp`).
 3. **Generate Prefilled 1-Click Link**:
-   - Call `checkout.links.get_direct_url(handle=..., size_index=...)`.
+   - Call `checkout.links.get_direct_url(handle=..., size_index=..., address={...})`.
    - The tool automatically injects Shopify checkout prefill parameters (`checkout[shipping_address][...]`) for that address.
    - Present the 1-click buy button and confirm the delivery address:
-     > *"Delivering to your saved Home address in Dubai (Flat 402, Marina Crown). Here is your 1-click checkout link with your shipping details prefilled: [Buy Now](...)"*
+     > *"Delivering to your address in Dubai (Flat 402, Marina Crown). Here is your 1-click checkout link with your shipping details prefilled: [Buy Now](...)"*
 
 ---
 

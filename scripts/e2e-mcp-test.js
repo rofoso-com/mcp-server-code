@@ -241,6 +241,47 @@ async function runE2ETests() {
   console.log(`✓ Cleaned up test address: ${delRes.deleted_id}`);
   console.log("✅ [TEST 5 PASSED] Address saving, retrieval, prefilling, and deletion verified.");
 
+  // 5b. Cloud-Hosted Stateless & Disk-Write Protection Test
+  console.log("\n[TEST 5b] Testing Cloud-Hosted Mode (Disk Write Protection & Chat-Context Prefill)...");
+  process.env.POLOPAN_MCP_HOSTED = "true";
+  try {
+    const hostedSave = await callTool("address.save", {
+      firstName: "Aisha",
+      lastName: "Khan",
+      address1: "Downtown Boulevard",
+      city: "Dubai",
+      zip: "00000",
+      country: "AE",
+      phone: "+971509999999",
+      email: "aisha@example.com",
+      storage_mode: "stateless",
+    });
+    assert.equal(hostedSave.storage, "chat_context", "Cloud-hosted mode must specify storage as chat_context");
+    assert.equal(hostedSave.hosted_cloud, true, "hosted_cloud must be true");
+    assert(hostedSave.message.includes("NOT saved to the server's disk"), "Must inform user that data is not written to server disk");
+
+    // Test passing address directly in checkout.links.get_direct_url
+    const hostedCheckout = await callTool("checkout.links.get_direct_url", {
+      handle: sampleHandle,
+      size: "M",
+      address: hostedSave.address,
+    });
+    assert.equal(hostedCheckout.has_address, true, "Must recognize address passed in tool call");
+    assert(hostedCheckout.checkout_url.includes("Downtown+Boulevard") || hostedCheckout.checkout_url.includes("Downtown%2BBoulevard") || hostedCheckout.checkout_url.includes("Downtown"), "Must prefill address from chat context");
+    console.log(`✓ Cloud-hosted on-the-fly checkout URL prefilled: ${hostedCheckout.checkout_url}`);
+
+    // Test calling get_direct_url without address
+    const bareCheckout = await callTool("checkout.links.get_direct_url", {
+      handle: sampleHandle,
+      size: "M",
+    });
+    assert.equal(bareCheckout.has_address, false, "Must be false when no address is in context");
+    assert(bareCheckout.instructions.includes("ANTI-SHORTCIRCUIT RULE"), "Must advise agent of anti-shortcircuit behavior");
+    console.log("✅ [TEST 5b PASSED] Cloud-hosted server disk write protection and chat-context prefill verified.");
+  } finally {
+    delete process.env.POLOPAN_MCP_HOSTED;
+  }
+
   // 6. Occasion Looks Discovery Test (Strict 100% In-Stock Guarantee)
   console.log("\n[TEST 6] Testing 'looks.curation.by_occasion' ('Party') & in-stock filtering...");
   const occasionRes = await callTool("looks.curation.by_occasion", {
@@ -287,7 +328,7 @@ async function runE2ETests() {
     occasion: "Party",
     gender: "women",
     page: 1,
-    page_size: 2,
+    page_size: 10,
   });
   assert(Array.isArray(outfitsRes.looks) && outfitsRes.looks.length > 0, "Expected outfits array");
   console.log(`✓ Successfully fetched ${outfitsRes.looks.length} outfit sets for 'Party'`);

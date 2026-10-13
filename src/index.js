@@ -27,6 +27,7 @@ import {
   deleteAddress,
   setDefaultAddress,
   buildPrefilledCheckoutUrl,
+  isCloudHostedMode,
 } from "./region_manager.js";
 
 const config = {
@@ -407,13 +408,17 @@ server.registerTool(
   async ({ country }) => {
     const targetCountry = country ? (resolveCountryFromList(country)?.code || country.toUpperCase()) : activeRegion.country_code;
     const addr = getDefaultAddress(targetCountry);
+    const hosted = isCloudHostedMode();
     const result = {
       has_address: Boolean(addr),
       region_country: targetCountry,
       address: addr || null,
+      hosted_cloud: hosted,
       message: addr
         ? `Active default delivery address for ${targetCountry}: ${addr.firstName} ${addr.lastName || ""}, ${addr.address1}, ${addr.city} (${addr.type || "Home"})`
-        : `No saved delivery address found for ${targetCountry}. Please prompt user for recipient name, street address, city, postal code, phone, and email before completing purchase.`,
+        : hosted
+          ? `On the cloud-hosted server (https://mcp-server.polopan.com), delivery addresses are not stored on the server's disk for user privacy. If the user already shared their delivery address in this chat, pass it into 'checkout.links.get_direct_url(address={...})'. If not, prompt the user for their delivery details or suggest installing the local MCP (npx -y polopan-products-mcp) to save addresses locally on their computer.`
+          : `No saved delivery address found for ${targetCountry}. Please prompt user for recipient name, street address, city, postal code, phone, and email before completing purchase.`,
     };
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -442,6 +447,7 @@ server.registerTool(
       type: z.enum(["Home", "Work", "Other"]).default("Home").describe("Address label/type: 'Home', 'Work', or 'Other'"),
       is_default: z.boolean().default(true).describe("Set this address as default for the country (default true)"),
       id: z.string().optional().describe("Optional existing address ID to update"),
+      storage_mode: z.enum(["local", "stateless"]).optional().describe("Storage destination: 'local' (writes to ~/.polopan/region.json) or 'stateless' (returns for chat context without disk write). Defaults to 'stateless' in cloud-hosted environments."),
     },
     annotations: {
       readOnlyHint: false,
@@ -460,8 +466,11 @@ server.registerTool(
             text: JSON.stringify({
               success: true,
               address: res.address,
-              config_file: res.config_file,
-              message: `Delivery address saved successfully for ${res.address.country} (${res.address.firstName} at ${res.address.address1}, ${res.address.city}).`,
+              storage: res.storage || "local_disk",
+              hosted_cloud: Boolean(res.hosted_cloud),
+              config_file: res.config_file || null,
+              message: res.message || `Delivery address saved successfully for ${res.address.country} (${res.address.firstName} at ${res.address.address1}, ${res.address.city}).`,
+              instructions: res.instructions || null,
             }, null, 2),
           },
         ],
@@ -1476,7 +1485,9 @@ server.registerTool(
       checkout_url: finalCheckoutUrl,
       instructions: hasAddress
         ? `Provide this verified 1-click checkout button to the user. Confirm that shipping address (${targetAddress.address1}, ${targetAddress.city}) has been pre-filled.`
-        : `MANDATORY ANTI-SHORTCIRCUIT RULE: No saved delivery address found for region '${activeRegion.country_code}'. Prompt the user naturally for their shipping address (First Name, Street Address, City, Postal Code, Phone & Email), save it using 'address.save', and re-call 'checkout.links.get_direct_url' with the saved address.`,
+        : isCloudHostedMode()
+          ? `ANTI-SHORTCIRCUIT RULE: On the cloud-hosted server (https://mcp-server.polopan.com), delivery addresses are not stored on the server's disk for user privacy. If the user already shared their delivery address in this chat context, pass it into 'checkout.links.get_direct_url(address={...})' to generate their prefilled 1-click buy link. If not, prompt the user for their delivery details (Recipient name, street address, city, postal code, phone, email) or suggest installing the local MCP (npx -y polopan-products-mcp) to save addresses permanently on their own computer.`
+          : `MANDATORY ANTI-SHORTCIRCUIT RULE: No saved delivery address found for region '${activeRegion.country_code}'. Prompt the user naturally for their shipping address (First Name, Street Address, City, Postal Code, Phone & Email), save it using 'address.save', and re-call 'checkout.links.get_direct_url' with the saved address.`,
       warning: hasAddress ? null : `Missing delivery address for region ${activeRegion.country_code}`,
     };
 

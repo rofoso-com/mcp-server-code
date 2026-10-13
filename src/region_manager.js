@@ -196,9 +196,23 @@ export function getLocalRegionConfigPath() {
 }
 
 /**
+ * Check if running in cloud-hosted multi-tenant mode (e.g. mcp-server.polopan.com).
+ * In cloud-hosted mode, writes to server disk are strictly forbidden to prevent
+ * multi-user data leakage and multi-tenant overwrite.
+ */
+export function isCloudHostedMode() {
+  return (
+    process.env.POLOPAN_MCP_HOSTED === "true" ||
+    process.env.POLOPAN_HOSTED === "true" ||
+    process.env.POLOPAN_MCP_STORAGE === "stateless"
+  );
+}
+
+/**
  * Load raw JSON configuration file from disk.
  */
 export function loadRawConfig() {
+  if (isCloudHostedMode()) return {};
   const filePath = getLocalRegionConfigPath();
   try {
     if (fs.existsSync(filePath)) {
@@ -216,6 +230,14 @@ export function loadRawConfig() {
  * Save raw configuration payload to local JSON file.
  */
 export function saveRawConfig(data) {
+  if (isCloudHostedMode()) {
+    return {
+      success: true,
+      storage: "stateless_session",
+      hosted_cloud: true,
+      message: "On the cloud-hosted server (https://mcp-server.polopan.com), settings and addresses are NOT written to the server's disk to protect your privacy. To save addresses permanently across sessions, install the local MCP (npx -y polopan-products-mcp).",
+    };
+  }
   const filePath = getLocalRegionConfigPath();
   try {
     const dir = path.dirname(filePath);
@@ -342,8 +364,11 @@ export function getDefaultAddress(countryCode = null) {
     if (firstForCountry) return firstForCountry;
   }
 
-  // 3. Fallback to any default or first address
-  return addresses.find((a) => a.is_default) || addresses[0] || null;
+  // 3. Fallback to any default or first address ONLY if targetCountry was not specified
+  if (!targetCountry) {
+    return addresses.find((a) => a.is_default) || addresses[0] || null;
+  }
+  return null;
 }
 
 /**
@@ -413,6 +438,18 @@ export function saveAddress(addressData, setAsDefault = true) {
   }
 
   const newDefaultId = normalized.is_default ? id : (rawConfig.default_address_id || id);
+
+  const isStateless = addressData.storage_mode === "stateless" || isCloudHostedMode();
+  if (isStateless) {
+    return {
+      success: true,
+      address: normalized,
+      storage: "chat_context",
+      hosted_cloud: true,
+      message: "Delivery address received for this order! NOTE: On the cloud-hosted server (https://mcp-server.polopan.com), addresses are NOT saved to the server's disk to ensure your privacy. Please retain this in chat context or install the local MCP (npx -y polopan-products-mcp) to save addresses permanently on your computer.",
+      instructions: "Pass this address directly into 'checkout.links.get_direct_url' via the 'address' argument to produce the 1-click prefilled checkout link.",
+    };
+  }
 
   const payload = {
     ...rawConfig,
