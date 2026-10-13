@@ -52,6 +52,9 @@ async function runE2ETests() {
   console.log(`✓ Tools: ${toolNames.join(", ")}`);
 
   const expectedTools = [
+    "region.get_current",
+    "region.set_current",
+    "region.list_supported",
     "products.search.text",
     "products.search.image_url",
     "products.search.image_upload",
@@ -59,6 +62,7 @@ async function runE2ETests() {
     "looks.curation.by_occasion",
     "products.items.get_by_handle",
     "products.items.check_stock",
+    "products.items.get_size_guide",
     "checkout.links.get_direct_url",
     "products.search.alternatives",
     "looks.curation.recommend",
@@ -67,7 +71,7 @@ async function runE2ETests() {
   for (const exp of expectedTools) {
     assert(toolNames.includes(exp), `Expected tool '${exp}' was not found in registered tools`);
   }
-  console.log("✅ [TEST 1 PASSED] All 10 expected tools are registered with schemas.");
+  console.log(`✅ [TEST 1 PASSED] All ${expectedTools.length} expected tools are registered with schemas.`);
 
   // Helper for calling tools
   async function callTool(name, args) {
@@ -83,6 +87,50 @@ async function runE2ETests() {
     assert(textObj && textObj.text, `Tool ${name} returned empty content`);
     return JSON.parse(textObj.text);
   }
+
+  // 1b. Region Management & Persistent JSON Test
+  console.log("\n[TEST 1b] Testing 'region.get_current', 'region.set_current', and 'region.list_supported'...");
+  const initialRegion = await callTool("region.get_current", {});
+  console.log(`✓ Initial Region: ${initialRegion.country_name} (${initialRegion.country_code}) [${initialRegion.currency}] - Mode: ${initialRegion.catalog_mode}`);
+  assert(initialRegion.country_code, "Initial region must have country_code");
+  assert(initialRegion.config_file_path, "Initial region must report config_file_path");
+
+  // Test setting region by natural country name ("United States")
+  const setUsRes = await callTool("region.set_current", {
+    country: "United States",
+    mode: "global",
+  });
+  console.log(`✓ Set Region to "United States": ${setUsRes.active_region.country_name} (${setUsRes.active_region.country_code}) [${setUsRes.active_region.currency}]`);
+  assert.equal(setUsRes.active_region.country_code, "US");
+  assert.equal(setUsRes.active_region.currency, "USD");
+
+  // Test setting region by city / colloquial name ("Dubai" -> AE)
+  const setDubaiRes = await callTool("region.set_current", {
+    country: "Dubai",
+  });
+  console.log(`✓ Set Region to "Dubai": ${setDubaiRes.active_region.country_name} (${setDubaiRes.active_region.country_code}) [${setDubaiRes.active_region.currency}]`);
+  assert.equal(setDubaiRes.active_region.country_code, "AE");
+  assert.equal(setDubaiRes.active_region.currency, "AED");
+
+  // Test setting region by alias ("UK" -> GB)
+  const setUkRes = await callTool("region.set_current", {
+    country: "UK",
+  });
+  console.log(`✓ Set Region to "UK": ${setUkRes.active_region.country_name} (${setUkRes.active_region.country_code}) [${setUkRes.active_region.currency}]`);
+  assert.equal(setUkRes.active_region.country_code, "GB");
+  assert.equal(setUkRes.active_region.currency, "GBP");
+
+  // Test list supported countries
+  const supportedList = await callTool("region.list_supported", {
+    query: "emirates",
+  });
+  console.log(`✓ Search Supported Countries for 'emirates': found ${supportedList.total_matched} countries`);
+  assert(supportedList.total_matched > 0, "Should match UAE");
+  assert.equal(supportedList.matches[0].code, "AE");
+
+  // Re-set to India for following tests or keep as set
+  await callTool("region.set_current", { country: "India", mode: "global" });
+  console.log("✅ [TEST 1b PASSED] Multi-region persistent JSON management & natural country resolution verified.");
 
   // 2. Text Search & Available Sizes Enrichment Test
   console.log("\n[TEST 2] Testing 'products.search.text' & size/url/policy enrichment...");
@@ -129,6 +177,7 @@ async function runE2ETests() {
   console.log(`✓ Product Details Table: ${JSON.stringify(stockRes.product_details)}`);
   console.log(`✓ Selected Size: ${JSON.stringify(stockRes.selected_size)}`);
   console.log(`✓ Current Price: ₹${stockRes.current_price} (MRP: ₹${stockRes.original_price}, Discount: ${stockRes.discount_percentage})`);
+  console.log(`✓ Region Currency: ${stockRes.currency} (${stockRes.currency_symbol}), Country: ${stockRes.region_country}`);
   console.log(`✓ Shipping SLA: ${stockRes.shipping_policy_text}, Return: ${stockRes.return_policy_text}`);
   console.log(`✓ Direct Checkout URL: ${stockRes.direct_checkout_url}`);
   assert.equal(stockRes.selected_size.is_in_stock, true, "Desired size should be reported in stock");
@@ -152,12 +201,12 @@ async function runE2ETests() {
   console.log("✅ [TEST 5 PASSED] Direct checkout permalink with /{size_index} generation verified.");
 
   // 6. Occasion Looks Discovery Test (Strict 100% In-Stock Guarantee)
-  console.log("\n[TEST 6] Testing 'looks.curation.by_occasion' ('Wedding & Reception') & in-stock filtering...");
+  console.log("\n[TEST 6] Testing 'looks.curation.by_occasion' ('Party') & in-stock filtering...");
   const occasionRes = await callTool("looks.curation.by_occasion", {
-    occasion: "Wedding & Reception",
+    occasion: "Party",
     gender: "women",
     page: 1,
-    page_size: 2,
+    page_size: 10,
   });
   assert(Array.isArray(occasionRes.looks) && occasionRes.looks.length > 0, "Expected looks array for occasion");
   for (const look of occasionRes.looks) {
@@ -218,7 +267,7 @@ async function runE2ETests() {
   console.log("✅ [TEST 9 PASSED] Budget alternatives search verified.");
 
   console.log("\n=================================================");
-  console.log("🎉 ALL 9 END-TO-END TESTS PASSED SUCCESSFULLY!");
+  console.log("🎉 ALL END-TO-END TESTS PASSED SUCCESSFULLY!");
   console.log("=================================================\n");
 
   await transport.close();

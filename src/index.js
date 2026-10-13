@@ -14,14 +14,39 @@ import {
   formatShippingPolicy,
   isLookFullyInStock,
 } from "./product_purchase_links.js";
+import {
+  loadSavedRegionConfig,
+  saveRegionConfig,
+  syncPlatformCountries,
+  resolveCountryFromList,
+  searchSupportedCountries,
+  getLocalRegionConfigPath,
+} from "./region_manager.js";
 
 const config = {
   baseUrl: (process.env.POLOPAN_API_BASE_URL || "https://apiv2.polopan.com").replace(/\/$/, ""),
   fashionDetectUrl: (process.env.POLOPAN_FASHION_DETECT_BASE_URL || "https://fashion-detect.polopan.com").replace(/\/$/, ""),
   secretKey: (process.env.POLOPAN_MCP_SECRET_KEY || "MCP").trim(),
   userAgent: (process.env.POLOPAN_MCP_USER_AGENT || "PoloPan-MCP").trim(),
+  defaultCountry: (process.env.POLOPAN_COUNTRY || "IN").trim().toUpperCase(),
+  defaultMode: (process.env.POLOPAN_CATALOG_MODE || "global").trim().toLowerCase(),
   timeoutMs: Number(process.env.POLOPAN_MCP_TIMEOUT_MS || 20_000),
 };
+
+let activeRegion = loadSavedRegionConfig(config.defaultCountry, config.defaultMode);
+
+function resolveEffectiveRegion(countryArg, modeArg) {
+  let effectiveCountry = activeRegion.country_code;
+  if (countryArg && typeof countryArg === "string" && countryArg.trim()) {
+    const matched = resolveCountryFromList(countryArg);
+    effectiveCountry = matched ? matched.code : countryArg.trim().toUpperCase();
+  }
+  let effectiveMode = modeArg || activeRegion.mode || "global";
+  if (effectiveMode !== "local" && effectiveMode !== "global") {
+    effectiveMode = "global";
+  }
+  return { effectiveCountry, effectiveMode };
+}
 
 function getHeaders(extra = {}) {
   const headers = {
@@ -214,15 +239,151 @@ function parseBudgetRange(budgetRange) {
 
 const server = new McpServer({
   name: "polopan-products",
-  version: "1.2.9",
+  version: "1.3.0",
 });
+
+server.registerTool(
+  "region.get_current",
+  {
+    title: "Get Current Shopping Region & Settings",
+    description:
+      "Get the currently active shopping destination country, currency code, symbol, phone code, and catalog scope mode from persistent local configuration (~/.polopan/region.json).",
+    inputSchema: {},
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 0.9,
+    },
+  },
+  async () => {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            status: "success",
+            ...activeRegion,
+            catalog_mode: activeRegion.mode || "global",
+            active_region: {
+              ...activeRegion,
+              catalog_mode: activeRegion.mode || "global",
+            },
+            config_file_path: getLocalRegionConfigPath(),
+            message: `Currently shopping in ${activeRegion.flag || ""} ${activeRegion.country_name} (${activeRegion.country_code}) with currency ${activeRegion.currency} (${activeRegion.currency_symbol}). Catalog mode: ${activeRegion.mode}.`,
+          }),
+        },
+      ],
+    };
+  }
+);
+
+server.registerTool(
+  "region.set_current",
+  {
+    title: "Set Current Shopping Region",
+    description:
+      "Set the active shopping country/region using any natural country name, city (e.g. 'Dubai', 'London', 'California', 'Paris'), 2-letter ISO code ('US', 'GB', 'IN', 'AE', 'CA'), or currency ('USD', 'AED', 'GBP', 'EUR'). Saves to persistent local JSON (~/.polopan/region.json) so the user never needs to be asked again across turns and sessions.",
+    inputSchema: {
+      country: z.string().min(1, "country is required").describe("Target country name, alias, city, currency, or ISO-2 code (e.g. 'United States', 'US', 'UK', 'London', 'Dubai', 'UAE', 'Canada', 'India', 'Germany', 'AED', 'EUR')"),
+      mode: z.enum(["global", "local"]).optional().describe("Catalog mode: 'global' (ships to country) or 'local' (domestic store only). Defaults to 'global'."),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 0.9,
+    },
+  },
+  async ({ country, mode }) => {
+    await syncPlatformCountries(config.baseUrl, getHeaders()).catch(() => {});
+    const matched = resolveCountryFromList(country);
+
+    if (!matched) {
+      throw new Error(`Country '${country}' could not be resolved. Use 'region.list_supported' to browse 240+ supported countries.`);
+    }
+
+    const targetMode = mode || (matched.is_indexed ? (activeRegion.mode || "global") : "global");
+
+    activeRegion = {
+      country_code: matched.code,
+      country_name: matched.name,
+      flag: matched.flag || "🌐",
+      currency: matched.currency || "USD",
+      currency_symbol: matched.symbol || "$",
+      phone: matched.phone || "",
+      mode: targetMode,
+      is_indexed: Boolean(matched.is_indexed),
+      price_groups: Array.isArray(matched.price_groups) ? matched.price_groups : [],
+      updated_at: new Date().toISOString(),
+    };
+
+    const saveResult = saveRegionConfig(activeRegion);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            status: "success",
+            ...activeRegion,
+            catalog_mode: activeRegion.mode,
+            message: `Active shopping region successfully set to ${activeRegion.flag} ${activeRegion.country_name} (${activeRegion.country_code}). Pricing currency is ${activeRegion.currency} (${activeRegion.currency_symbol}). Saved to local config.`,
+            active_region: {
+              ...activeRegion,
+              catalog_mode: activeRegion.mode,
+            },
+            config_file_path: saveResult.file,
+            persisted_to: saveResult.file,
+          }),
+        },
+      ],
+    };
+  }
+);
+
+server.registerTool(
+  "region.list_supported",
+  {
+    title: "List & Search Supported Countries",
+    description:
+      "Search the 240+ supported destination countries with localized currency codes, symbols, flags, phone codes, and price groups from live platform settings.",
+    inputSchema: {
+      query: z.string().optional().describe("Optional search filter by country name, ISO code, currency, or phone dialing code (e.g. 'Emirates', 'dollar', 'CAD', 'Europe')"),
+      limit: z.number().int().min(1).max(250).default(20).describe("Max number of countries to return (default: 20)"),
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      audience: ["user", "assistant"],
+      priority: 0.8,
+    },
+  },
+  async ({ query, limit }) => {
+    const countries = await syncPlatformCountries(config.baseUrl, getHeaders());
+    const matches = searchSupportedCountries(query, countries);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            total_matched: matches.length,
+            total_matching: matches.length,
+            matches: matches.slice(0, limit),
+            countries: matches.slice(0, limit),
+          }),
+        },
+      ],
+    };
+  }
+);
 
 server.registerTool(
   "products.search.text",
   {
     title: "Search Products By Text",
     description:
-      "Search PoloPan catalog products using a text keyword query with optional multi-attribute filters. Returns matching fashion items with available in-stock sizes, product specifications, shipping/return policies, discounted pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\n" +
+      "Search PoloPan catalog products using a text keyword query with optional multi-attribute filters. Returns matching fashion items with available in-stock sizes, product specifications, shipping/return policies, discounted pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}). Automatically localized to active country / 240+ destination regions.\n\n" +
       "PURPOSE & DISAMBIGUATION:\n" +
       "- Primary text-based catalog search tool for fashion discovery across apparel, footwear, and accessories.\n" +
       "- Distinct from 'products.search.image_url' / 'products.search.image_upload': Use this tool for textual queries and keyword filters, NOT for visual image search.\n" +
@@ -230,7 +391,7 @@ server.registerTool(
       "- Distinct from 'looks.curation.by_occasion': Use this tool to search individual products, NOT complete multi-piece outfit looks.\n\n" +
       "WHEN TO USE:\n" +
       "- When a user searches for clothing or fashion styles using keywords, brand names, colors, or categories (e.g. 'black leather jacket', 'floral summer midi dress', 'men linen shirts').\n" +
-      "- When refining catalog searches with structured filters like price ranges, gender, sizes, or vendor brands.\n\n" +
+      "- When refining catalog searches with structured filters like price ranges, gender, sizes, country regions, or vendor brands.\n\n" +
       "WHEN NOT TO USE:\n" +
       "- Do NOT use when the user provides an image URL or image file (use 'products.search.image_url' or 'products.search.image_upload').\n" +
       "- Do NOT use when searching for cheaper/higher-end substitutes of a specific known product (use 'products.search.alternatives').\n" +
@@ -241,6 +402,8 @@ server.registerTool(
       "- Handles pagination and multi-attribute filtering deterministically.\n\n" +
       "PARAMETERS & CONSTRAINTS:\n" +
       "- 'query' (string, required): Free-text search query or style keyword (e.g. 'black linen shirt', 'oversized hoodie').\n" +
+      "- 'country' (string, optional): Target country name, city, currency, or ISO-2 code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region.\n" +
+      "- 'mode' (enum, optional): Catalog mode: 'global' (ships to country) or 'local' (domestic only).\n" +
       "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
       "- 'page_size' (integer 1-100, default 20): Number of products returned per page.\n" +
       "- 'sort_by' (enum, default 'relevance'): Ranking criterion ('relevance', 'price', 'title').\n" +
@@ -256,6 +419,8 @@ server.registerTool(
       "3. Return the clean base link (https://s.polopan.com/p/{handle}) during browsing. Provide direct checkout link (https://s.polopan.com/p/{handle}/{size_index}) ONLY after the user's size is finalized.",
     inputSchema: {
       query: z.string().min(1, "query is required").describe("The search query or style keyword to find fashion items (e.g. 'black leather jacket', 'floral summer midi dress')"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
+      mode: z.enum(["global", "local"]).optional().describe("Catalog mode: 'global' (ships to country) or 'local' (domestic only). Defaults to active saved region."),
       page: z.number().int().min(1).max(1000).default(1).describe("Pagination page number (1-indexed, starts at 1)"),
       page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page (1 to 100, default 20)"),
       sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria for search results: 'relevance', 'price', or 'title'"),
@@ -274,7 +439,13 @@ server.registerTool(
     },
   },
   async (args) => {
-    const data = await apiGet("/products", args);
+    const { country, mode, ...rest } = args;
+    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const data = await apiGet("/products", {
+      ...rest,
+      country: effectiveCountry,
+      mode: effectiveMode,
+    });
     return asToolResultWithPurchaseLinks(data);
   }
 );
@@ -284,7 +455,7 @@ server.registerTool(
   {
     title: "Search Products By Image URL",
     description:
-      "Search PoloPan catalog products using visual image similarity from a publicly accessible image URL with optional multi-attribute filters. Returns visually similar products with available sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\n" +
+      "Search PoloPan catalog products using visual image similarity from a publicly accessible image URL with optional multi-attribute filters. Returns visually similar products with available sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}). Automatically localized to active country / 240+ destination regions.\n\n" +
       "PURPOSE & DISAMBIGUATION:\n" +
       "- Performs reverse visual search using computer-vision embeddings for a remote image URL.\n" +
       "- Distinct from 'products.search.text': Use this tool when you have an image URL, NOT for textual keyword queries.\n" +
@@ -302,6 +473,8 @@ server.registerTool(
       "- Enriches all returned items with verified PoloPan purchase links and stock metadata.\n\n" +
       "PARAMETERS & CONSTRAINTS:\n" +
       "- 'image_url' (string, required): Publicly accessible HTTP(S) URL of the image to search for visual matches.\n" +
+      "- 'country' (string, optional): Target country name, city, currency, or ISO-2 code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region.\n" +
+      "- 'mode' (enum, optional): Catalog mode: 'global' (ships to country) or 'local' (domestic only).\n" +
       "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
       "- 'page_size' (integer 1-100, default 20): Number of candidate items returned per page.\n" +
       "- 'sort_by' (enum, default 'relevance'): Ranking attribute ('relevance', 'price', 'title').\n" +
@@ -314,6 +487,8 @@ server.registerTool(
       "- 'personalize' (boolean, default false): Whether to apply personalized ranking weights.",
     inputSchema: {
       image_url: z.string().url("image_url must be a valid HTTP(S) URL").describe("Publicly accessible HTTP(S) URL of the fashion image to search for visual matches"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
+      mode: z.enum(["global", "local"]).optional().describe("Catalog mode: 'global' (ships to country) or 'local' (domestic only). Defaults to active saved region."),
       page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination (1-indexed)"),
       page_size: z.number().int().min(1).max(100).default(20).describe("Number of items to return per page (1 to 100, default 20)"),
       sort_by: z.enum(["relevance", "price", "title"]).default("relevance").describe("Sorting criteria for search results: 'relevance', 'price', or 'title'"),
@@ -333,7 +508,13 @@ server.registerTool(
     },
   },
   async (args) => {
-    const data = await apiGet("/products", args);
+    const { country, mode, ...rest } = args;
+    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const data = await apiGet("/products", {
+      ...rest,
+      country: effectiveCountry,
+      mode: effectiveMode,
+    });
     return asToolResultWithPurchaseLinks(data);
   }
 );
@@ -343,7 +524,7 @@ server.registerTool(
   {
     title: "Search Products By Uploaded Image",
     description:
-      "Upload a local image file (or base64 string) and search PoloPan catalog products using visual image similarity. Returns matching products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}).\n\n" +
+      "Upload a local image file (or base64 string) and search PoloPan catalog products using visual image similarity. Returns matching products with available in-stock sizes, pricing, and verified purchase URLs (https://s.polopan.com/p/{handle}). Automatically localized to active country / 240+ destination regions.\n\n" +
       "PURPOSE & DISAMBIGUATION:\n" +
       "- Performs reverse visual search by uploading a local or base64-encoded image to secure temporary storage, then querying visual embeddings.\n" +
       "- Distinct from 'products.search.image_url': Use this tool when the image file is local on the user's machine or in base64 format, NOT already on a public URL.\n" +
@@ -360,6 +541,8 @@ server.registerTool(
       "PARAMETERS & CONSTRAINTS:\n" +
       "- 'image_path' (string, optional): Local file system path to the image file (one of image_path or image_base64 is required).\n" +
       "- 'image_base64' (string, optional): Base64-encoded image data string.\n" +
+      "- 'country' (string, optional): Target country name, city, currency, or ISO-2 code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region.\n" +
+      "- 'mode' (enum, optional): Catalog mode: 'global' (ships to country) or 'local' (domestic only).\n" +
       "- 'content_type' (string, default 'image/jpeg'): MIME type of the uploaded image (e.g. 'image/jpeg', 'image/png', 'image/webp').\n" +
       "- 'expiry_hours' (integer 1-168, default 24): Temporary upload lifetime in hours before expiration.\n" +
       "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
@@ -375,6 +558,8 @@ server.registerTool(
     inputSchema: {
       image_path: z.string().min(1).optional().describe("Local file system path to the image file (e.g. '/path/to/dress.jpg')"),
       image_base64: z.string().min(1).optional().describe("Base64-encoded image data string (alternative to image_path)"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
+      mode: z.enum(["global", "local"]).optional().describe("Catalog mode: 'global' (ships to country) or 'local' (domestic only). Defaults to active saved region."),
       content_type: z.string().default("image/jpeg").describe("MIME type of the image, e.g. 'image/jpeg', 'image/png', 'image/webp'"),
       expiry_hours: z.number().int().min(1).max(168).default(24).describe("Temporary upload URL lifetime in hours before expiration (1 to 168, default 24)"),
       page: z.number().int().min(1).max(1000).default(1).describe("Pagination page number (1-indexed)"),
@@ -396,7 +581,7 @@ server.registerTool(
     },
   },
   async (args) => {
-    const { image_path, image_base64, content_type, expiry_hours, ...searchParams } = args;
+    const { image_path, image_base64, content_type, expiry_hours, country, mode, ...searchParams } = args;
     if (!image_path && !image_base64) {
       throw new Error("Either image_path or image_base64 is required.");
     }
@@ -426,9 +611,12 @@ server.registerTool(
       throw new Error("Upload succeeded but no image URL was returned.");
     }
 
+    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
     const data = await apiGet("/products", {
       image_url: imageUrl,
       ...searchParams,
+      country: effectiveCountry,
+      mode: effectiveMode,
     });
 
     return asToolResultWithPurchaseLinks({
@@ -523,7 +711,7 @@ server.registerTool(
   {
     title: "Get Looks By Occasion",
     description:
-      "Discover complete curated fashion looks styled for specific occasions (e.g., 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'). All returned looks are verified 100% in-stock (any look with an out-of-stock item is automatically excluded).\n\n" +
+      "Discover complete curated fashion looks styled for specific occasions (e.g., 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'). All returned looks are verified 100% in-stock (any look with an out-of-stock item is automatically excluded). Automatically localized to active country / 240+ destination regions.\n\n" +
       "PURPOSE & DISAMBIGUATION:\n" +
       "- Curates multi-item aesthetic outfits tailored to specific social events, vibes, and demographics.\n" +
       "- Distinct from 'products.search.text': Use this tool to retrieve complete harmonized outfits, NOT individual standalone products.\n" +
@@ -540,6 +728,8 @@ server.registerTool(
       "PARAMETERS & CONSTRAINTS:\n" +
       "- 'occasion' (string, optional): Target occasion or theme ('Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal').\n" +
       "- 'gender' (enum, default 'women'): Target gender filter ('women', 'men', 'female', 'male').\n" +
+      "- 'country' (string, optional): Target country name, city, currency, or ISO-2 code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region.\n" +
+      "- 'mode' (enum, optional): Catalog mode: 'global' (ships to country) or 'local' (domestic only).\n" +
       "- 'age' (integer 16-99, default 25): Target demographic age.\n" +
       "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
       "- 'page_size' (integer 1-100, default 10): Number of looks per page.\n" +
@@ -551,6 +741,8 @@ server.registerTool(
     inputSchema: {
       occasion: z.string().optional().describe("Target occasion or vibe: 'Wedding & Reception', 'Party', 'Casual', 'Cocktail', 'Date Night', 'Club Night', 'Brunch', 'Vacation', 'Formal'"),
       gender: z.enum(["women", "men", "female", "male"]).default("women").describe("Target gender filter: 'women' or 'men' (default: 'women')"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
+      mode: z.enum(["global", "local"]).optional().describe("Catalog mode: 'global' (ships to country) or 'local' (domestic only). Defaults to active saved region."),
       age: z.number().int().min(16).max(99).default(25).describe("Target demographic age (16 to 99, default 25)"),
       page: z.number().int().min(1).max(1000).default(1).describe("Page number for looks pagination (1-indexed)"),
       page_size: z.number().int().min(1).max(100).default(10).describe("Number of looks returned per page (1 to 100, default 10)"),
@@ -563,14 +755,17 @@ server.registerTool(
       priority: 1.0,
     },
   },
-  async ({ occasion, gender, age, page, page_size, vendor }) => {
+  async ({ occasion, gender = "women", age = 25, page = 1, page_size = 10, vendor, country, mode }) => {
     const normalizedGender = normalizeFeedGender(gender);
+    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
     const payload = {
       gender: normalizedGender,
-      age,
-      page,
-      page_size,
+      age: Number(age) || 25,
+      page: Number(page) || 1,
+      page_size: Number(page_size) || 10,
       use_sample_vector: true,
+      country: effectiveCountry,
+      mode: effectiveMode,
     };
 
     if (occasion && occasion.trim()) {
@@ -826,6 +1021,9 @@ server.registerTool(
       current_price: selectedSizeEntry?.price ?? minPrice,
       original_price: compareAtPrice,
       discount_percentage: discountPercentage ? `${discountPercentage}%` : "0%",
+      currency: activeRegion.currency,
+      currency_symbol: activeRegion.currency_symbol,
+      region_country: activeRegion.country_code,
       shipping_days: shippingDays,
       return_allowed: returnAllowed,
       return_days: returnDays,
@@ -1062,7 +1260,7 @@ server.registerTool(
   {
     title: "Search Alternatives In Budget",
     description:
-      "Find visual substitute products within a designated price bracket for a given fashion item handle using visual image similarity.\n\n" +
+      "Find visual substitute products within a designated price bracket for a given fashion item handle using visual image similarity. Automatically localized to active country / 240+ destination regions.\n\n" +
       "PURPOSE & DISAMBIGUATION:\n" +
       "- Retrieves catalog items visually similar to an existing product (e.g. finding similar shirts or jackets) constrained to a target budget tier.\n" +
       "- Distinct from 'products.search.text': Use this tool when substituting a specific known item by handle, NOT for free-text search queries.\n" +
@@ -1081,6 +1279,8 @@ server.registerTool(
       "PARAMETERS & CONSTRAINTS:\n" +
       "- 'handle' (string, required): The unique identifier of the source product to find alternatives for.\n" +
       "- 'budget_range' (enum, default '1501-3000'): Price tier bracket ('0-1500', '1501-3000', '3001-5000', '5000+').\n" +
+      "- 'country' (string, optional): Target country name, city, currency, or ISO-2 code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region.\n" +
+      "- 'mode' (enum, optional): Catalog mode: 'global' (ships to country) or 'local' (domestic only).\n" +
       "- 'limit' (integer 1-100, default 6): Maximum number of alternative products returned in the final list.\n" +
       "- 'page' (integer >= 1, default 1): Pagination page number for the search pool.\n" +
       "- 'page_size' (integer 1-100, default 8): Number of candidate items fetched per page before limit filtering.\n" +
@@ -1090,6 +1290,8 @@ server.registerTool(
     inputSchema: {
       handle: z.string().min(1, "handle is required").describe("The unique product handle identifier to find visual alternatives for (e.g. 'solid-cotton-shirt')"),
       budget_range: z.enum(["0-1500", "1501-3000", "3001-5000", "5000+"]).default("1501-3000").describe("Target price bracket filter in local currency: '0-1500', '1501-3000', '3001-5000', or '5000+'"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
+      mode: z.enum(["global", "local"]).optional().describe("Catalog mode: 'global' (ships to country) or 'local' (domestic only). Defaults to active saved region."),
       page: z.number().int().min(1).max(1000).default(1).describe("Pagination page number (1-indexed)"),
       page_size: z.number().int().min(1).max(100).default(8).describe("Number of candidate items to fetch per backend page (1-100)"),
       limit: z.number().int().min(1).max(100).default(6).describe("Maximum number of filtered alternative products to return in the result (1-100)"),
@@ -1104,14 +1306,18 @@ server.registerTool(
       priority: 1.0,
     },
   },
-  async ({ handle, budget_range, page, page_size, limit, sort_by, sort_order, personalize }) => {
+  async ({ handle, budget_range, page, page_size, limit, sort_by, sort_order, personalize, country, mode }) => {
     const product = await apiGet(`/products/handle/${encodeURIComponent(handle)}`);
     let mainImage = product?.images?.[0]?.src || product?.main_image_url || "";
+
+    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
 
     // Some handle payloads may not include images; fallback to a text search by title.
     if (!mainImage && product?.title) {
       const fallback = await apiGet("/products", {
         query: product.title,
+        country: effectiveCountry,
+        mode: effectiveMode,
         page: 1,
         page_size: 1,
         sort_by: "relevance",
@@ -1126,6 +1332,8 @@ server.registerTool(
     const data = await apiGet("/products", mainImage
       ? {
           image_url: mainImage,
+          country: effectiveCountry,
+          mode: effectiveMode,
           page,
           page_size,
           sort_by,
@@ -1136,6 +1344,8 @@ server.registerTool(
         }
       : {
           query: product?.title || "",
+          country: effectiveCountry,
+          mode: effectiveMode,
           page,
           page_size,
           sort_by,
@@ -1166,7 +1376,7 @@ server.registerTool(
   {
     title: "Get Recommended Outfits",
     description:
-      "Get complete recommended outfits. Pass a product 'handle' to find complementary items styled with it, OR pass an 'occasion' (e.g. 'Wedding & Reception', 'Party', 'Cocktail', 'Date Night', 'Formal') and 'gender' to discover full occasion looks. All returned looks are verified 100% in-stock (any look with an out-of-stock item is excluded).\n\n" +
+      "Get complete recommended outfits. Pass a product 'handle' to find complementary items styled with it, OR pass an 'occasion' (e.g. 'Wedding & Reception', 'Party', 'Cocktail', 'Date Night', 'Formal') and 'gender' to discover full occasion looks. All returned looks are verified 100% in-stock (any look with an out-of-stock item is excluded). Automatically localized to active country / 240+ destination regions.\n\n" +
       "PURPOSE & DISAMBIGUATION:\n" +
       "- Generates harmonized outfits coordinated around a seed product handle or occasion theme.\n" +
       "- Distinct from 'products.search.alternatives': Use 'looks.curation.recommend' to build coordinating outfits with different garment pieces (e.g. pairing pants and shoes with a shirt); use 'products.search.alternatives' to find visual replacements for the exact same garment.\n" +
@@ -1185,6 +1395,8 @@ server.registerTool(
       "- 'handle' (string, optional): Product handle identifier to build coordinating outfits around (e.g. 'solid-linen-shirt').\n" +
       "- 'occasion' (string, optional): Target occasion or theme (e.g. 'Wedding & Reception', 'Party', 'Cocktail', 'Date Night', 'Formal').\n" +
       "- 'gender' (enum, default 'women'): Target gender filter ('women', 'men', 'female', 'male').\n" +
+      "- 'country' (string, optional): Target country name, city, currency, or ISO-2 code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region.\n" +
+      "- 'mode' (enum, optional): Catalog mode: 'global' (ships to country) or 'local' (domestic only).\n" +
       "- 'page' (integer >= 1, default 1): Pagination page number.\n" +
       "- 'page_size' (integer 1-100, default 20): Number of outfit sets per page.\n\n" +
       "MANDATORY AGENT INSTRUCTIONS:\n" +
@@ -1195,6 +1407,8 @@ server.registerTool(
       handle: z.string().optional().describe("Product handle identifier to build coordinating outfits around (e.g. 'solid-linen-shirt')"),
       occasion: z.string().optional().describe("Target occasion or aesthetic theme (e.g. 'Wedding & Reception', 'Party', 'Cocktail', 'Date Night', 'Formal')"),
       gender: z.enum(["women", "men", "female", "male"]).default("women").describe("Target gender filter: 'women' or 'men' (default: 'women')"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
+      mode: z.enum(["global", "local"]).optional().describe("Catalog mode: 'global' (ships to country) or 'local' (domestic only). Defaults to active saved region."),
       page: z.number().int().min(1).max(1000).default(1).describe("Page number for pagination (1-indexed)"),
       page_size: z.number().int().min(1).max(100).default(20).describe("Number of outfit sets to return per page (1 to 100, default 20)"),
     },
@@ -1205,12 +1419,16 @@ server.registerTool(
       priority: 1.0,
     },
   },
-  async ({ handle, occasion, gender, page, page_size }) => {
+  async ({ handle, occasion, gender = "women", page = 1, page_size = 20, country, mode }) => {
+    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+
     if (handle && handle.trim()) {
       const data = await apiPost("/looks", {
         handle: handle.trim(),
-        page,
-        page_size,
+        country: effectiveCountry,
+        mode: effectiveMode,
+        page: Number(page) || 1,
+        page_size: Number(page_size) || 20,
       });
 
       let looks = [];
@@ -1238,9 +1456,11 @@ server.registerTool(
     const payload = {
       gender: normalizedGender,
       age: 25,
-      page,
-      page_size,
+      page: Number(page) || 1,
+      page_size: Number(page_size) || 20,
       use_sample_vector: true,
+      country: effectiveCountry,
+      mode: effectiveMode,
     };
     if (occasion && occasion.trim()) {
       payload.occasion = occasion.trim();
@@ -1298,6 +1518,9 @@ server.registerResource(
 );
 
 async function main() {
+  // Prefetch & cache supported countries list in background
+  syncPlatformCountries(config.baseUrl, getHeaders()).catch(() => {});
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
