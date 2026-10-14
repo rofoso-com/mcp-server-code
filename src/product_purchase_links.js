@@ -3,6 +3,13 @@
  * (tracking host → https://s.polopan.com/p/{handle}), never raw catalog products.url.
  */
 
+import {
+  convertAndFormatPrice,
+  convertCurrency,
+  formatPrice,
+  getSymbolForCurrency,
+} from "./region_manager.js";
+
 const DEFAULT_TRACKING_BASE = "https://tracking.polopan.com";
 const DEFAULT_LINK_CONCURRENCY = 12;
 
@@ -116,7 +123,7 @@ export function isLookFullyInStock(look) {
   return true;
 }
 
-function sanitizeProductObject(product, linkByHandle) {
+function sanitizeProductObject(product, linkByHandle, forexOptions = {}) {
   const handle = product.handle.trim();
   const next = { ...product };
   stripCatalogUrlFields(next);
@@ -125,15 +132,48 @@ function sanitizeProductObject(product, linkByHandle) {
   const basePurchaseUrl = rawPurchaseUrl.replace(/\/$/, "");
   next.url = basePurchaseUrl;
 
+  const nativeCurrency = (product.currency || product.default_currency || "INR").trim().toUpperCase();
+  const targetCurrency = (forexOptions.targetCurrency || nativeCurrency).trim().toUpperCase();
+  const targetSymbol = forexOptions.targetSymbol || getSymbolForCurrency(targetCurrency);
+  const doConvert = targetCurrency !== nativeCurrency;
+
   if (Array.isArray(next.variants) && next.variants.length > 0) {
     const enrichedVariants = next.variants.map((v, idx) => {
       const isAvailable = (typeof v.inventory_quantity !== "number" || v.inventory_quantity > 0) && v.available !== false;
       const checkoutUrl = `${basePurchaseUrl}/${idx}`;
+      const rawPrice = v.price;
+      const rawCompareAtPrice = v.compare_at_price || v.compareAtPrice;
+
+      const converted = doConvert
+        ? convertAndFormatPrice(rawPrice, nativeCurrency, targetCurrency, targetSymbol)
+        : {
+            price: rawPrice,
+            price_exact: rawPrice,
+            price_formatted: formatPrice(rawPrice, targetCurrency, targetSymbol),
+            currency: targetCurrency,
+            currency_symbol: targetSymbol,
+            native_price: rawPrice,
+            native_currency: nativeCurrency,
+          };
+
+      const convertedCompareAt = rawCompareAtPrice
+        ? (doConvert ? Math.ceil(convertCurrency(rawCompareAtPrice, nativeCurrency, targetCurrency)) : rawCompareAtPrice)
+        : null;
+
       return {
         ...v,
         size_index: idx,
         checkout_url: checkoutUrl,
         available: isAvailable,
+        price: converted.price,
+        price_exact: converted.price_exact,
+        price_formatted: converted.price_formatted,
+        compare_at_price: convertedCompareAt,
+        native_price: rawPrice,
+        native_compare_at_price: rawCompareAtPrice,
+        currency: targetCurrency,
+        currency_symbol: targetSymbol,
+        native_currency: nativeCurrency,
       };
     });
 
@@ -149,28 +189,78 @@ function sanitizeProductObject(product, linkByHandle) {
       size_index: v.size_index,
       size: v.option1 || v.title || `Option ${v.size_index}`,
       price: v.price,
-      compare_at_price: v.compare_at_price || v.compareAtPrice,
+      price_exact: v.price_exact,
+      price_formatted: v.price_formatted,
+      compare_at_price: v.compare_at_price,
       available: v.available,
       inventory_quantity: typeof v.inventory_quantity === "number" ? v.inventory_quantity : (v.available ? 1 : 0),
       checkout_url: v.checkout_url,
+      native_price: v.native_price,
+      currency: targetCurrency,
+      currency_symbol: targetSymbol,
+      native_currency: nativeCurrency,
     }));
 
     next.is_in_stock = inStockVariants.length > 0;
   } else {
+    const rawPrice = next.price || null;
+    const rawCompare = next.compare_at_price || null;
+    const converted = doConvert
+      ? convertAndFormatPrice(rawPrice, nativeCurrency, targetCurrency, targetSymbol)
+      : {
+          price: rawPrice,
+          price_exact: rawPrice,
+          price_formatted: formatPrice(rawPrice, targetCurrency, targetSymbol),
+          currency: targetCurrency,
+          currency_symbol: targetSymbol,
+          native_price: rawPrice,
+          native_currency: nativeCurrency,
+        };
+
+    const convertedCompare = rawCompare
+      ? (doConvert ? Math.ceil(convertCurrency(rawCompare, nativeCurrency, targetCurrency)) : rawCompare)
+      : null;
+
     next.sizes = [
       {
         size_index: 0,
         size: "One Size",
-        price: next.price || null,
-        compare_at_price: next.compare_at_price || null,
+        price: converted.price,
+        price_exact: converted.price_exact,
+        price_formatted: converted.price_formatted,
+        compare_at_price: convertedCompare,
         available: true,
         inventory_quantity: 1,
         checkout_url: `${basePurchaseUrl}/0`,
+        native_price: rawPrice,
+        currency: targetCurrency,
+        currency_symbol: targetSymbol,
+        native_currency: nativeCurrency,
       },
     ];
     next.available_sizes = ["One Size"];
     next.is_in_stock = true;
   }
+
+  if (next.sizes && next.sizes.length > 0) {
+    const prices = next.sizes.map((s) => s.price).filter((p) => typeof p === "number");
+    const nativePrices = next.sizes.map((s) => s.native_price).filter((p) => typeof p === "number");
+    if (prices.length > 0) {
+      next.min_price = Math.min(...prices);
+      next.max_price = Math.max(...prices);
+      next.price = next.min_price;
+      next.price_formatted = formatPrice(next.price, targetCurrency, targetSymbol);
+    }
+    if (nativePrices.length > 0) {
+      next.native_min_price = Math.min(...nativePrices);
+      next.native_max_price = Math.max(...nativePrices);
+      next.native_price = next.native_min_price;
+    }
+  }
+
+  next.currency = targetCurrency;
+  next.currency_symbol = targetSymbol;
+  next.native_currency = nativeCurrency;
 
   const shippingDays = Number(next.shippingDays ?? next.shipping_days ?? 1) || 1;
   const returnAllowed = next.returnAllowed ?? next.return_allowed ?? true;
@@ -666,21 +756,55 @@ export function extractProductDetailsTable(product) {
 }
 
 /** Deep-copy payload tree; replace product.url with resolved purchase links only. */
-export function applyPurchaseLinksToTree(payload, linkByHandle) {
+export function applyPurchaseLinksToTree(payload, linkByHandle, forexOptions = {}) {
   if (payload === null || payload === undefined) return payload;
   if (Array.isArray(payload)) {
-    return payload.map((item) => applyPurchaseLinksToTree(item, linkByHandle));
+    return payload.map((item) => applyPurchaseLinksToTree(item, linkByHandle, forexOptions));
   }
   if (typeof payload !== "object") return payload;
 
   if (isProductLike(payload)) {
-    return sanitizeProductObject(payload, linkByHandle);
+    return sanitizeProductObject(payload, linkByHandle, forexOptions);
   }
 
   const out = {};
   for (const [key, value] of Object.entries(payload)) {
-    out[key] = applyPurchaseLinksToTree(value, linkByHandle);
+    out[key] = applyPurchaseLinksToTree(value, linkByHandle, forexOptions);
   }
+
+  // If payload contains looks, enrich looks with total_price in target currency
+  if (Array.isArray(out.looks)) {
+    for (const look of out.looks) {
+      if (Array.isArray(look.outfit_components)) {
+        let totalConverted = 0;
+        let totalNative = 0;
+        let nativeCur = "INR";
+        for (const comp of look.outfit_components) {
+          if (Array.isArray(comp.products) && comp.products.length > 0) {
+            const firstProd = comp.products[0];
+            if (firstProd && typeof firstProd.price === "number") {
+              totalConverted += firstProd.price;
+            }
+            if (firstProd && typeof firstProd.native_price === "number") {
+              totalNative += firstProd.native_price;
+            }
+            if (firstProd?.native_currency) {
+              nativeCur = firstProd.native_currency;
+            }
+          }
+        }
+        const targetCur = (forexOptions.targetCurrency || "USD").toUpperCase();
+        const targetSym = forexOptions.targetSymbol || getSymbolForCurrency(targetCur);
+        look.total_price = totalConverted;
+        look.total_price_formatted = formatPrice(totalConverted, targetCur, targetSym);
+        look.currency = targetCur;
+        look.currency_symbol = targetSym;
+        look.native_total_price = totalNative;
+        look.native_currency = nativeCur;
+      }
+    }
+  }
+
   return out;
 }
 
@@ -764,12 +888,16 @@ export async function resolvePurchaseLinksForHandles(handles, options) {
  */
 export async function applyPurchaseLinksToMcpPayload(payload, options = {}) {
   const handles = collectProductHandles(payload);
+  const forexOptions = {
+    targetCurrency: options.targetCurrency,
+    targetSymbol: options.targetSymbol,
+  };
   if (!handles.size) {
-    return payload;
+    return applyPurchaseLinksToTree(payload, new Map(), forexOptions);
   }
 
   const linkByHandle = await resolvePurchaseLinksForHandles(handles, options);
-  return applyPurchaseLinksToTree(payload, linkByHandle);
+  return applyPurchaseLinksToTree(payload, linkByHandle, forexOptions);
 }
 
 export function buildPurchaseLinkResolverOptions({ config, getHeaders, recordUpstreamGet }) {

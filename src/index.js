@@ -18,6 +18,8 @@ import {
   loadSavedRegionConfig,
   saveRegionConfig,
   syncPlatformCountries,
+  syncPlatformForex,
+  getLoadedForexRates,
   resolveCountryFromList,
   searchSupportedCountries,
   getLocalRegionConfigPath,
@@ -28,6 +30,10 @@ import {
   setDefaultAddress,
   buildPrefilledCheckoutUrl,
   isCloudHostedMode,
+  convertCurrency,
+  convertAndFormatPrice,
+  formatPrice,
+  getSymbolForCurrency,
 } from "./region_manager.js";
 
 const config = {
@@ -43,16 +49,30 @@ const config = {
 let activeRegion = loadSavedRegionConfig(config.defaultCountry, config.defaultMode);
 
 function resolveEffectiveRegion(countryArg, modeArg) {
+  let matched = null;
   let effectiveCountry = activeRegion.country_code;
+  let targetCurrency = activeRegion.currency || "INR";
+  let targetSymbol = activeRegion.currency_symbol || "₹";
+
   if (countryArg && typeof countryArg === "string" && countryArg.trim()) {
-    const matched = resolveCountryFromList(countryArg);
-    effectiveCountry = matched ? matched.code : countryArg.trim().toUpperCase();
+    matched = resolveCountryFromList(countryArg);
+    if (matched) {
+      effectiveCountry = matched.code;
+      targetCurrency = matched.currency || "USD";
+      targetSymbol = matched.symbol || getSymbolForCurrency(targetCurrency);
+    } else {
+      effectiveCountry = countryArg.trim().toUpperCase();
+      const ratesObj = getLoadedForexRates();
+      targetCurrency = ratesObj?.country_currencies?.[effectiveCountry] || "USD";
+      targetSymbol = getSymbolForCurrency(targetCurrency);
+    }
   }
+
   let effectiveMode = modeArg || activeRegion.mode || "global";
   if (effectiveMode !== "local" && effectiveMode !== "global") {
     effectiveMode = "global";
   }
-  return { effectiveCountry, effectiveMode };
+  return { effectiveCountry, effectiveMode, targetCurrency, targetSymbol, matched };
 }
 
 function getHeaders(extra = {}) {
@@ -221,8 +241,14 @@ const purchaseLinkOptions = buildPurchaseLinkResolverOptions({
   getHeaders,
 });
 
-async function asToolResultWithPurchaseLinks(data) {
-  const sanitized = await applyPurchaseLinksToMcpPayload(data, purchaseLinkOptions);
+async function asToolResultWithPurchaseLinks(data, forexOptions = {}) {
+  const effectiveTarget = forexOptions.targetCurrency || activeRegion.currency || "INR";
+  const effectiveSymbol = forexOptions.targetSymbol || activeRegion.currency_symbol || getSymbolForCurrency(effectiveTarget);
+  const sanitized = await applyPurchaseLinksToMcpPayload(data, {
+    ...purchaseLinkOptions,
+    targetCurrency: effectiveTarget,
+    targetSymbol: effectiveSymbol,
+  });
   if (Array.isArray(sanitized?.looks)) {
     sanitized.looks = sanitized.looks.filter(isLookFullyInStock);
   }
@@ -303,7 +329,10 @@ server.registerTool(
     },
   },
   async ({ country, mode }) => {
-    await syncPlatformCountries(config.baseUrl, getHeaders()).catch(() => {});
+    await Promise.all([
+      syncPlatformCountries(config.baseUrl, getHeaders()),
+      syncPlatformForex(config.baseUrl, getHeaders()),
+    ]).catch(() => {});
     const matched = resolveCountryFromList(country);
 
     if (!matched) {
@@ -642,14 +671,26 @@ server.registerTool(
     },
   },
   async (args) => {
-    const { country, mode, ...rest } = args;
-    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const { country, mode, price_min, price_max, ...rest } = args;
+    const { effectiveCountry, effectiveMode, targetCurrency, targetSymbol } = resolveEffectiveRegion(country, mode);
+    let backendPriceMin = price_min;
+    let backendPriceMax = price_max;
+    if (targetCurrency !== "INR") {
+      if (typeof price_min === "number") {
+        backendPriceMin = Math.floor(convertCurrency(price_min, targetCurrency, "INR"));
+      }
+      if (typeof price_max === "number") {
+        backendPriceMax = Math.ceil(convertCurrency(price_max, targetCurrency, "INR"));
+      }
+    }
     const data = await apiGet("/products", {
       ...rest,
+      price_min: backendPriceMin,
+      price_max: backendPriceMax,
       country: effectiveCountry,
       mode: effectiveMode,
     });
-    return asToolResultWithPurchaseLinks(data);
+    return asToolResultWithPurchaseLinks(data, { targetCurrency, targetSymbol });
   }
 );
 
@@ -711,14 +752,26 @@ server.registerTool(
     },
   },
   async (args) => {
-    const { country, mode, ...rest } = args;
-    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const { country, mode, price_min, price_max, ...rest } = args;
+    const { effectiveCountry, effectiveMode, targetCurrency, targetSymbol } = resolveEffectiveRegion(country, mode);
+    let backendPriceMin = price_min;
+    let backendPriceMax = price_max;
+    if (targetCurrency !== "INR") {
+      if (typeof price_min === "number") {
+        backendPriceMin = Math.floor(convertCurrency(price_min, targetCurrency, "INR"));
+      }
+      if (typeof price_max === "number") {
+        backendPriceMax = Math.ceil(convertCurrency(price_max, targetCurrency, "INR"));
+      }
+    }
     const data = await apiGet("/products", {
       ...rest,
+      price_min: backendPriceMin,
+      price_max: backendPriceMax,
       country: effectiveCountry,
       mode: effectiveMode,
     });
-    return asToolResultWithPurchaseLinks(data);
+    return asToolResultWithPurchaseLinks(data, { targetCurrency, targetSymbol });
   }
 );
 
@@ -814,10 +867,22 @@ server.registerTool(
       throw new Error("Upload succeeded but no image URL was returned.");
     }
 
-    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const { effectiveCountry, effectiveMode, targetCurrency, targetSymbol } = resolveEffectiveRegion(country, mode);
+    let backendPriceMin = searchParams.price_min;
+    let backendPriceMax = searchParams.price_max;
+    if (targetCurrency !== "INR") {
+      if (typeof searchParams.price_min === "number") {
+        backendPriceMin = Math.floor(convertCurrency(searchParams.price_min, targetCurrency, "INR"));
+      }
+      if (typeof searchParams.price_max === "number") {
+        backendPriceMax = Math.ceil(convertCurrency(searchParams.price_max, targetCurrency, "INR"));
+      }
+    }
     const data = await apiGet("/products", {
       image_url: imageUrl,
       ...searchParams,
+      price_min: backendPriceMin,
+      price_max: backendPriceMax,
       country: effectiveCountry,
       mode: effectiveMode,
     });
@@ -825,7 +890,7 @@ server.registerTool(
     return asToolResultWithPurchaseLinks({
       uploaded_image_url: imageUrl,
       ...data,
-    });
+    }, { targetCurrency, targetSymbol });
   }
 );
 
@@ -960,7 +1025,7 @@ server.registerTool(
   },
   async ({ occasion, gender = "women", age = 25, page = 1, page_size = 10, vendor, country, mode }) => {
     const normalizedGender = normalizeFeedGender(gender);
-    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const { effectiveCountry, effectiveMode, targetCurrency, targetSymbol } = resolveEffectiveRegion(country, mode);
     const payload = {
       gender: normalizedGender,
       age: Number(age) || 25,
@@ -979,7 +1044,7 @@ server.registerTool(
     }
 
     const data = await apiPost("/looks/feed/public", payload);
-    return asToolResultWithPurchaseLinks(data);
+    return asToolResultWithPurchaseLinks(data, { targetCurrency, targetSymbol });
   }
 );
 
@@ -1006,6 +1071,7 @@ server.registerTool(
       "- 'handle' (string, required): Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206').",
     inputSchema: {
       handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206')"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
     },
     annotations: {
       readOnlyHint: true,
@@ -1014,9 +1080,10 @@ server.registerTool(
       priority: 1.0,
     },
   },
-  async ({ handle }) => {
+  async ({ handle, country }) => {
+    const { targetCurrency, targetSymbol } = resolveEffectiveRegion(country);
     const data = await apiGet(`/products/handle/${encodeURIComponent(handle)}`);
-    return asToolResultWithPurchaseLinks(data);
+    return asToolResultWithPurchaseLinks(data, { targetCurrency, targetSymbol });
   }
 );
 
@@ -1122,6 +1189,7 @@ server.registerTool(
       handle: z.string().min(1, "handle is required").describe("Unique product handle identifier (e.g. 'solid-linen-shirt', 'shopify_11206')"),
       desired_size: z.string().optional().describe("Optional size query to verify against variant inventory (e.g. 'M', 'L', 'XL', '32', '40')"),
       size_index: z.number().int().min(0).optional().describe("Zero-based index of the specific size variant to inspect"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
     },
     annotations: {
       readOnlyHint: true,
@@ -1130,8 +1198,12 @@ server.registerTool(
       priority: 1.0,
     },
   },
-  async ({ handle, desired_size, size_index }) => {
+  async ({ handle, desired_size, size_index, country }) => {
+    const { effectiveCountry, targetCurrency, targetSymbol } = resolveEffectiveRegion(country);
     const product = await apiGet(`/products/handle/${encodeURIComponent(handle.trim())}`);
+    const nativeCurrency = (product?.currency || product?.default_currency || "INR").trim().toUpperCase();
+    const doConvert = targetCurrency !== nativeCurrency;
+
     const variants = Array.isArray(product?.variants) ? product.variants : [];
     const basePurchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
 
@@ -1147,15 +1219,39 @@ server.registerTool(
         const sizeLabel = v.option1 || v.title || `Option ${idx}`;
         const isAvailable = (typeof v.inventory_quantity !== "number" || v.inventory_quantity > 0) && v.available !== false;
         const checkoutUrl = `${basePurchaseUrl}/${idx}`;
+        const rawPrice = v.price;
+        const rawCompareAtPrice = v.compare_at_price || v.compareAtPrice;
+
+        const converted = doConvert
+          ? convertAndFormatPrice(rawPrice, nativeCurrency, targetCurrency, targetSymbol)
+          : {
+              price: rawPrice,
+              price_exact: rawPrice,
+              price_formatted: formatPrice(rawPrice, targetCurrency, targetSymbol),
+              currency: targetCurrency,
+              currency_symbol: targetSymbol,
+              native_price: rawPrice,
+              native_currency: nativeCurrency,
+            };
+
+        const convertedCompareAt = rawCompareAtPrice
+          ? (doConvert ? Math.ceil(convertCurrency(rawCompareAtPrice, nativeCurrency, targetCurrency)) : rawCompareAtPrice)
+          : null;
 
         const sizeEntry = {
           size_index: idx,
           size: sizeLabel,
-          price: v.price,
-          compare_at_price: v.compare_at_price || v.compareAtPrice,
+          price: converted.price,
+          price_exact: converted.price_exact,
+          price_formatted: converted.price_formatted,
+          compare_at_price: convertedCompareAt,
           available: isAvailable,
           inventory_quantity: typeof v.inventory_quantity === "number" ? v.inventory_quantity : (isAvailable ? 1 : 0),
           checkout_url: checkoutUrl,
+          native_price: rawPrice,
+          currency: targetCurrency,
+          currency_symbol: targetSymbol,
+          native_currency: nativeCurrency,
         };
         sizes.push(sizeEntry);
 
@@ -1173,14 +1269,37 @@ server.registerTool(
         }
       }
     } else {
+      const rawPrice = product?.price || null;
+      const rawCompare = product?.compare_at_price || null;
+      const converted = doConvert
+        ? convertAndFormatPrice(rawPrice, nativeCurrency, targetCurrency, targetSymbol)
+        : {
+            price: rawPrice,
+            price_exact: rawPrice,
+            price_formatted: formatPrice(rawPrice, targetCurrency, targetSymbol),
+            currency: targetCurrency,
+            currency_symbol: targetSymbol,
+            native_price: rawPrice,
+            native_currency: nativeCurrency,
+          };
+      const convertedCompare = rawCompare
+        ? (doConvert ? Math.ceil(convertCurrency(rawCompare, nativeCurrency, targetCurrency)) : rawCompare)
+        : null;
+
       sizes.push({
         size_index: 0,
         size: "One Size",
-        price: product?.price || null,
-        compare_at_price: product?.compare_at_price || null,
+        price: converted.price,
+        price_exact: converted.price_exact,
+        price_formatted: converted.price_formatted,
+        compare_at_price: convertedCompare,
         available: true,
         inventory_quantity: 1,
         checkout_url: `${basePurchaseUrl}/0`,
+        native_price: rawPrice,
+        currency: targetCurrency,
+        currency_symbol: targetSymbol,
+        native_currency: nativeCurrency,
       });
       availableSizes.push("One Size");
       minPrice = product?.price || null;
@@ -1194,6 +1313,21 @@ server.registerTool(
     const discountPercentage = (compareAtPrice && minPrice && compareAtPrice > minPrice)
       ? Math.round(((compareAtPrice - minPrice) / compareAtPrice) * 100)
       : 0;
+
+    const rawCurrentPrice = selectedSizeEntry?.native_price ?? minPrice;
+    const rawComparePrice = compareAtPrice;
+
+    const convertedCurrent = doConvert
+      ? convertAndFormatPrice(rawCurrentPrice, nativeCurrency, targetCurrency, targetSymbol)
+      : {
+          price: rawCurrentPrice,
+          price_exact: rawCurrentPrice,
+          price_formatted: formatPrice(rawCurrentPrice, targetCurrency, targetSymbol),
+        };
+
+    const convertedOriginal = rawComparePrice
+      ? (doConvert ? convertAndFormatPrice(rawComparePrice, nativeCurrency, targetCurrency, targetSymbol) : { price: rawComparePrice, price_formatted: formatPrice(rawComparePrice, targetCurrency, targetSymbol) })
+      : null;
 
     const productDetails = extractProductDetailsTable(product);
     const sizeChart = extractProductSizeChart(product);
@@ -1218,15 +1352,29 @@ server.registerTool(
         size: selectedSizeEntry?.size || null,
         is_in_stock: selectedSizeEntry?.available ?? false,
         inventory_quantity: selectedSizeEntry?.inventory_quantity ?? 0,
-        price: selectedSizeEntry?.price ?? minPrice,
+        price: selectedSizeEntry?.price ?? convertedCurrent.price,
+        price_exact: selectedSizeEntry?.price_exact ?? convertedCurrent.price_exact,
+        price_formatted: selectedSizeEntry?.price_formatted ?? convertedCurrent.price_formatted,
+        native_price: rawCurrentPrice,
+        currency: targetCurrency,
+        currency_symbol: targetSymbol,
+        native_currency: nativeCurrency,
         checkout_url: directCheckoutUrl,
       },
-      current_price: selectedSizeEntry?.price ?? minPrice,
-      original_price: compareAtPrice,
+      price: convertedCurrent.price,
+      price_formatted: convertedCurrent.price_formatted,
+      current_price: convertedCurrent.price,
+      current_price_exact: convertedCurrent.price_exact,
+      current_price_formatted: convertedCurrent.price_formatted,
+      original_price: convertedOriginal?.price ?? null,
+      original_price_formatted: convertedOriginal?.price_formatted ?? null,
       discount_percentage: discountPercentage ? `${discountPercentage}%` : "0%",
-      currency: activeRegion.currency,
-      currency_symbol: activeRegion.currency_symbol,
-      region_country: activeRegion.country_code,
+      native_current_price: rawCurrentPrice,
+      native_original_price: rawComparePrice,
+      native_currency: nativeCurrency,
+      currency: targetCurrency,
+      currency_symbol: targetSymbol,
+      region_country: effectiveCountry,
       shipping_days: shippingDays,
       return_allowed: returnAllowed,
       return_days: returnDays,
@@ -1408,6 +1556,7 @@ server.registerTool(
         phone: z.string().optional(),
         email: z.string().optional(),
       }).optional().describe("Optional ad-hoc address object to prefill"),
+      country: z.string().optional().describe("Country name, city, currency, or 2-letter ISO code (e.g. 'US', 'United States', 'UK', 'Dubai', 'CA', 'IN'). Defaults to active saved region."),
     },
     annotations: {
       readOnlyHint: true,
@@ -1416,27 +1565,39 @@ server.registerTool(
       priority: 1.0,
     },
   },
-  async ({ handle, size, size_index, quantity, coupon, address_id, address }) => {
+  async ({ handle, size, size_index, quantity, coupon, address_id, address, country }) => {
+    const { effectiveCountry, targetCurrency, targetSymbol } = resolveEffectiveRegion(country);
     const basePurchaseUrl = `https://s.polopan.com/p/${encodeURIComponent(handle.trim())}`;
 
     let resolvedIndex = typeof size_index === "number" ? size_index : null;
     let resolvedSizeLabel = size || null;
     let resolvedPrice = null;
+    let nativeCurrency = "INR";
 
-    if (resolvedIndex === null) {
-      try {
-        const product = await apiGet(`/products/handle/${encodeURIComponent(handle.trim())}`);
-        const variants = Array.isArray(product?.variants) ? product.variants : [];
+    try {
+      const product = await apiGet(`/products/handle/${encodeURIComponent(handle.trim())}`);
+      nativeCurrency = (product?.currency || product?.default_currency || "INR").trim().toUpperCase();
+      const variants = Array.isArray(product?.variants) ? product.variants : [];
+      if (resolvedIndex === null) {
         const match = findVariantMatch(variants, size, undefined);
         resolvedIndex = match.index;
         if (match.variant) {
           resolvedSizeLabel = match.variant.option1 || match.variant.title || size;
           resolvedPrice = match.variant.price;
         }
-      } catch (_) {
-        resolvedIndex = 0;
+      } else if (variants[resolvedIndex]) {
+        resolvedSizeLabel = variants[resolvedIndex].option1 || variants[resolvedIndex].title || size;
+        resolvedPrice = variants[resolvedIndex].price;
       }
+    } catch (_) {
+      if (resolvedIndex === null) resolvedIndex = 0;
     }
+
+    const convertedPriceObj = resolvedPrice !== null
+      ? (targetCurrency !== nativeCurrency
+          ? convertAndFormatPrice(resolvedPrice, nativeCurrency, targetCurrency, targetSymbol)
+          : { price: resolvedPrice, price_exact: resolvedPrice, price_formatted: formatPrice(resolvedPrice, targetCurrency, targetSymbol) })
+      : null;
 
     const baseCheckoutUrl = `${basePurchaseUrl}/${resolvedIndex}`;
 
@@ -1448,7 +1609,7 @@ server.registerTool(
       const allAddresses = getSavedAddresses();
       targetAddress = allAddresses.find((a) => a.id === address_id.trim()) || null;
     } else {
-      targetAddress = getDefaultAddress(activeRegion.country_code);
+      targetAddress = getDefaultAddress(effectiveCountry);
     }
 
     const finalCheckoutUrl = buildPrefilledCheckoutUrl(baseCheckoutUrl, targetAddress, {
@@ -1461,7 +1622,14 @@ server.registerTool(
       handle: handle.trim(),
       size: resolvedSizeLabel,
       size_index: resolvedIndex,
-      price: resolvedPrice,
+      price: convertedPriceObj ? convertedPriceObj.price : resolvedPrice,
+      price_exact: convertedPriceObj ? convertedPriceObj.price_exact : resolvedPrice,
+      price_formatted: convertedPriceObj ? convertedPriceObj.price_formatted : (resolvedPrice !== null ? `${resolvedPrice}` : null),
+      native_price: resolvedPrice,
+      native_currency: nativeCurrency,
+      currency: targetCurrency,
+      currency_symbol: targetSymbol,
+      region_country: effectiveCountry,
       quantity,
       coupon: coupon?.trim() || null,
       has_address: hasAddress,
@@ -1476,7 +1644,7 @@ server.registerTool(
             city: targetAddress.city || "",
             province: targetAddress.province || targetAddress.state || "",
             zip: targetAddress.zip || targetAddress.postal_code || "",
-            country: targetAddress.country || activeRegion.country_code,
+            country: targetAddress.country || effectiveCountry,
             phone: targetAddress.phone || "",
             email: targetAddress.email || "",
             type: targetAddress.type || "Home",
@@ -1487,8 +1655,8 @@ server.registerTool(
         ? `Provide this verified 1-click checkout button to the user. Confirm that shipping address (${targetAddress.address1}, ${targetAddress.city}) has been pre-filled.`
         : isCloudHostedMode()
           ? `ANTI-SHORTCIRCUIT RULE: On the cloud-hosted server (https://mcp-server.polopan.com), delivery addresses are not stored on the server's disk for user privacy. If the user already shared their delivery address in this chat context, pass it into 'checkout.links.get_direct_url(address={...})' to generate their prefilled 1-click buy link. If not, prompt the user for their delivery details (Recipient name, street address, city, postal code, phone, email) or suggest installing the local MCP (npx -y polopan-products-mcp) to save addresses permanently on their own computer.`
-          : `MANDATORY ANTI-SHORTCIRCUIT RULE: No saved delivery address found for region '${activeRegion.country_code}'. Prompt the user naturally for their shipping address (First Name, Street Address, City, Postal Code, Phone & Email), save it using 'address.save', and re-call 'checkout.links.get_direct_url' with the saved address.`,
-      warning: hasAddress ? null : `Missing delivery address for region ${activeRegion.country_code}`,
+          : `MANDATORY ANTI-SHORTCIRCUIT RULE: No saved delivery address found for region '${effectiveCountry}'. Prompt the user naturally for their shipping address (First Name, Street Address, City, Postal Code, Phone & Email), save it using 'address.save', and re-call 'checkout.links.get_direct_url' with the saved address.`,
+      warning: hasAddress ? null : `Missing delivery address for region ${effectiveCountry}`,
     };
 
     return {
@@ -1557,7 +1725,7 @@ server.registerTool(
     const product = await apiGet(`/products/handle/${encodeURIComponent(handle)}`);
     let mainImage = product?.images?.[0]?.src || product?.main_image_url || "";
 
-    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const { effectiveCountry, effectiveMode, targetCurrency, targetSymbol } = resolveEffectiveRegion(country, mode);
 
     // Some handle payloads may not include images; fallback to a text search by title.
     if (!mainImage && product?.title) {
@@ -1576,6 +1744,17 @@ server.registerTool(
     }
 
     const { price_min, price_max } = parseBudgetRange(budget_range);
+    let backendPriceMin = price_min;
+    let backendPriceMax = price_max;
+    if (targetCurrency !== "INR") {
+      if (typeof price_min === "number") {
+        backendPriceMin = Math.floor(convertCurrency(price_min, targetCurrency, "INR"));
+      }
+      if (typeof price_max === "number") {
+        backendPriceMax = Math.ceil(convertCurrency(price_max, targetCurrency, "INR"));
+      }
+    }
+
     const data = await apiGet("/products", mainImage
       ? {
           image_url: mainImage,
@@ -1586,8 +1765,8 @@ server.registerTool(
           sort_by,
           sort_order,
           personalize,
-          price_min,
-          price_max,
+          price_min: backendPriceMin,
+          price_max: backendPriceMax,
         }
       : {
           query: product?.title || "",
@@ -1598,8 +1777,8 @@ server.registerTool(
           sort_by,
           sort_order,
           personalize,
-          price_min,
-          price_max,
+          price_min: backendPriceMin,
+          price_max: backendPriceMax,
         });
 
     const products = Array.isArray(data?.products) ? data.products : [];
@@ -1614,7 +1793,7 @@ server.registerTool(
       fallback_mode: mainImage ? "image_similarity" : "text_query",
       products: filtered,
       pagination: data?.pagination ?? null,
-    });
+    }, { targetCurrency, targetSymbol });
   }
 );
 
@@ -1667,7 +1846,7 @@ server.registerTool(
     },
   },
   async ({ handle, occasion, gender = "women", page = 1, page_size = 20, country, mode }) => {
-    const { effectiveCountry, effectiveMode } = resolveEffectiveRegion(country, mode);
+    const { effectiveCountry, effectiveMode, targetCurrency, targetSymbol } = resolveEffectiveRegion(country, mode);
 
     if (handle && handle.trim()) {
       const data = await apiPost("/looks", {
@@ -1695,7 +1874,7 @@ server.registerTool(
         handle,
         looks,
         pagination,
-      });
+      }, { targetCurrency, targetSymbol });
     }
 
     // Occasion-based looks discovery
@@ -1714,7 +1893,7 @@ server.registerTool(
     }
 
     const data = await apiPost("/looks/feed/public", payload);
-    return asToolResultWithPurchaseLinks(data);
+    return asToolResultWithPurchaseLinks(data, { targetCurrency, targetSymbol });
   }
 );
 
@@ -1765,8 +1944,11 @@ server.registerResource(
 );
 
 async function main() {
-  // Prefetch & cache supported countries list in background
-  syncPlatformCountries(config.baseUrl, getHeaders()).catch(() => {});
+  // Prefetch & cache supported countries and forex rates in background
+  Promise.all([
+    syncPlatformCountries(config.baseUrl, getHeaders()),
+    syncPlatformForex(config.baseUrl, getHeaders()),
+  ]).catch(() => {});
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

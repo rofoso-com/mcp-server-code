@@ -134,6 +134,7 @@ export const COUNTRY_ALIASES = {
   HINDUSTAN: "IN",
   SINGAPORE: "SG",
   CANADA: "CA",
+  CAN: "CA",
   AUSTRALIA: "AU",
   GERMANY: "DE",
   DEUTSCHLAND: "DE",
@@ -148,6 +149,84 @@ export const COUNTRY_ALIASES = {
   KOREA: "KR",
   SAUDI: "SA",
   "SAUDI ARABIA": "SA",
+  // US States & Territories -> US
+  CA: "US",
+  CALIFORNIA: "US",
+  CALIF: "US",
+  "CA, US": "US",
+  "CA, USA": "US",
+  "US-CA": "US",
+  "NEW YORK": "US",
+  "NY, US": "US",
+  TEXAS: "US",
+  FLORIDA: "US",
+  WASHINGTON: "US",
+  ILLINOIS: "US",
+  PENNSYLVANIA: "US",
+  OHIO: "US",
+  GEORGIA: "US",
+  "NORTH CAROLINA": "US",
+  MICHIGAN: "US",
+  "NEW JERSEY": "US",
+  VIRGINIA: "US",
+  MASSACHUSETTS: "US",
+  ARIZONA: "US",
+  COLORADO: "US",
+  MARYLAND: "US",
+  TENNESSEE: "US",
+  MISSOURI: "US",
+  INDIANA: "US",
+  WISCONSIN: "US",
+  MINNESOTA: "US",
+  "SOUTH CAROLINA": "US",
+  ALABAMA: "US",
+  LOUISIANA: "US",
+  KENTUCKY: "US",
+  OREGON: "US",
+  OKLAHOMA: "US",
+  CONNECTICUT: "US",
+  UTAH: "US",
+  IOWA: "US",
+  NEVADA: "US",
+  ARKANSAS: "US",
+  MISSISSIPPI: "US",
+  KANSAS: "US",
+  "NEW MEXICO": "US",
+  NEBRASKA: "US",
+  IDAHO: "US",
+  HAWAII: "US",
+  ALASKA: "US",
+  // Major Metros -> US
+  "SAN FRANCISCO": "US",
+  SF: "US",
+  "LOS ANGELES": "US",
+  LA: "US",
+  "NEW YORK CITY": "US",
+  NYC: "US",
+  CHICAGO: "US",
+  SEATTLE: "US",
+  BOSTON: "US",
+  MIAMI: "US",
+  AUSTIN: "US",
+  DALLAS: "US",
+  HOUSTON: "US",
+  ATLANTA: "US",
+  // Canada Provinces & Cities -> CA
+  ONTARIO: "CA",
+  QUEBEC: "CA",
+  "BRITISH COLUMBIA": "CA",
+  TORONTO: "CA",
+  VANCOUVER: "CA",
+  MONTREAL: "CA",
+  // Australia Metros -> AU
+  SYDNEY: "AU",
+  MELBOURNE: "AU",
+  BRISBANE: "AU",
+  // European Cities
+  PARIS: "FR",
+  BERLIN: "DE",
+  MUNICH: "DE",
+  TOKYO: "JP",
 };
 
 /**
@@ -167,6 +246,60 @@ export const CURRENCY_PRIMARY_COUNTRIES = {
   NZD: "NZ",
   CHF: "CH",
 };
+
+/**
+ * Baseline fallback FOREX exchange rates (base currency USD).
+ * Mirrored from newapp and live apiv2 platform_settings key 'forex'.
+ */
+export const DEFAULT_FOREX_RATES = {
+  base_currency: "USD",
+  rates: {
+    USD: 1.0,
+    INR: 95.3192,
+    GBP: 0.7547,
+    SGD: 1.2798,
+    AED: 3.6725,
+    EUR: 0.8934,
+    CAD: 1.4221,
+    AUD: 1.4328,
+    JPY: 158.3076,
+    SAR: 3.75,
+    CHF: 0.8328,
+    NZD: 1.7817,
+  },
+  country_rates: {
+    US: 1.0,
+    IN: 95.3192,
+    GB: 0.7547,
+    AE: 3.6725,
+    CA: 1.4221,
+    AU: 1.4328,
+    SG: 1.2798,
+    SA: 3.75,
+    DE: 0.8934,
+    FR: 0.8934,
+    JP: 158.3076,
+  },
+  country_currencies: {
+    US: "USD",
+    IN: "INR",
+    GB: "GBP",
+    AE: "AED",
+    CA: "CAD",
+    AU: "AUD",
+    SG: "SGD",
+    SA: "SAR",
+    DE: "EUR",
+    FR: "EUR",
+    JP: "JPY",
+  },
+};
+
+/**
+ * In-memory cache for FOREX rates fetched from apiv2 (/platform/forex).
+ */
+let cachedPlatformForex = { ...DEFAULT_FOREX_RATES };
+let platformForexLastFetched = 0;
 
 /**
  * In-memory cache for all 240+ countries loaded from Mongo (/platform/countries).
@@ -721,4 +854,163 @@ export function searchSupportedCountries(query, countriesList = cachedPlatformCo
       (c.currency && c.currency.toLowerCase().includes(q)) ||
       (c.phone && c.phone.includes(q))
   );
+}
+
+/**
+ * Refresh and cache live FOREX rates from apiv2 (/platform/forex).
+ */
+export async function syncPlatformForex(baseUrl, headers = {}) {
+  const now = Date.now();
+  if (
+    cachedPlatformForex?.rates &&
+    Object.keys(cachedPlatformForex.rates).length > 20 &&
+    now - platformForexLastFetched < 300_000
+  ) {
+    return cachedPlatformForex;
+  }
+
+  try {
+    const res = await fetch(`${baseUrl}/platform/forex`, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...headers,
+      },
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.rates && typeof data.rates === "object") {
+        cachedPlatformForex = {
+          base_currency: data.base_currency || "USD",
+          rates: { ...DEFAULT_FOREX_RATES.rates, ...data.rates },
+          country_rates: data.country_rates || DEFAULT_FOREX_RATES.country_rates,
+          country_currencies: data.country_currencies || DEFAULT_FOREX_RATES.country_currencies,
+          updated_at: data.updated_at || new Date().toISOString(),
+        };
+        platformForexLastFetched = now;
+      }
+    }
+  } catch (_) {
+    // Keep cached or fallback rates on network error
+  }
+  return cachedPlatformForex;
+}
+
+/**
+ * Retrieve current cached FOREX rates object.
+ */
+export function getLoadedForexRates() {
+  return cachedPlatformForex;
+}
+
+/**
+ * Return appropriate currency symbol for standard currency codes.
+ */
+export function getSymbolForCurrency(currencyCode) {
+  if (!currencyCode) return "$";
+  const code = String(currencyCode).trim().toUpperCase();
+  const found = cachedPlatformCountries.find((c) => c.currency && c.currency.toUpperCase() === code);
+  if (found?.symbol) return found.symbol;
+  const seed = DEFAULT_SEED_COUNTRIES.find((c) => c.currency && c.currency.toUpperCase() === code);
+  if (seed?.symbol) return seed.symbol;
+
+  const fallback = {
+    USD: "$",
+    INR: "₹",
+    GBP: "£",
+    EUR: "€",
+    AED: "AED",
+    CAD: "CA$",
+    AUD: "A$",
+    SGD: "S$",
+    JPY: "¥",
+    SAR: "SAR",
+    CHF: "CHF",
+    NZD: "NZ$",
+  };
+  return fallback[code] || code;
+}
+
+/**
+ * Calculate exchange rate from one currency to another using base USD rates.
+ * Mirrored from newapp ForexRatesModel.getExchangeRate.
+ */
+export function getExchangeRate(fromCurrency, toCurrency) {
+  const from = (fromCurrency || "INR").trim().toUpperCase();
+  const to = (toCurrency || "USD").trim().toUpperCase();
+  if (from === to) return 1.0;
+
+  const rates = cachedPlatformForex?.rates || DEFAULT_FOREX_RATES.rates;
+  const rateFromBase = rates[from] ?? (from === "USD" ? 1.0 : null);
+  const rateToBase = rates[to] ?? (to === "USD" ? 1.0 : null);
+
+  if (!rateFromBase || !rateToBase || rateFromBase === 0) {
+    return 1.0;
+  }
+  return rateToBase / rateFromBase;
+}
+
+/**
+ * Convert numeric price amount from one currency to another.
+ * Mirrored from newapp ForexRatesModel.convert.
+ */
+export function convertCurrency(amount, fromCurrency = "INR", toCurrency = "USD") {
+  if (amount === null || amount === undefined || isNaN(amount)) return null;
+  const num = Number(amount);
+  const from = (fromCurrency || "INR").trim().toUpperCase();
+  const to = (toCurrency || "USD").trim().toUpperCase();
+  if (from === to) return num;
+  const rate = getExchangeRate(from, to);
+  return num * rate;
+}
+
+/**
+ * Format a numeric price with symbol, commas, and proper spacing.
+ * Mirrored from newapp CurrencyFormatter.formatConverted.
+ */
+export function formatPrice(amount, currencyCode = "USD", explicitSymbol = null) {
+  if (amount === null || amount === undefined || isNaN(amount)) return "";
+  const num = Number(amount);
+  const rounded = Math.ceil(num);
+  const cur = (currencyCode || "USD").trim().toUpperCase();
+  const sym = explicitSymbol || getSymbolForCurrency(cur);
+  const space =
+    ["INR", "AED", "SAR", "QAR", "OMR", "KWD", "BHD"].includes(cur) ||
+    (sym.length > 2 && !sym.includes("$"))
+      ? " "
+      : "";
+  const formattedNumber = rounded.toLocaleString(cur === "INR" ? "en-IN" : "en-US");
+  return `${sym}${space}${formattedNumber}`;
+}
+
+/**
+ * Convert and format a price amount, returning structured pricing data.
+ */
+export function convertAndFormatPrice(amount, fromCurrency = "INR", toCurrency = "USD", explicitSymbol = null) {
+  if (amount === null || amount === undefined || isNaN(amount)) {
+    return {
+      price: null,
+      price_exact: null,
+      price_formatted: "",
+      currency: toCurrency,
+      currency_symbol: explicitSymbol || getSymbolForCurrency(toCurrency),
+      native_price: amount,
+      native_currency: fromCurrency,
+    };
+  }
+  const from = (fromCurrency || "INR").trim().toUpperCase();
+  const to = (toCurrency || "USD").trim().toUpperCase();
+  const converted = convertCurrency(amount, from, to);
+  const rounded = Math.ceil(converted);
+  const symbol = explicitSymbol || getSymbolForCurrency(to);
+  return {
+    price: rounded,
+    price_exact: Math.round(converted * 100) / 100,
+    price_formatted: formatPrice(rounded, to, symbol),
+    currency: to,
+    currency_symbol: symbol,
+    native_price: Number(amount),
+    native_currency: from,
+  };
 }
